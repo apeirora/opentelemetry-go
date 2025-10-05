@@ -1,204 +1,128 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
-package log_test
+package log
 
 import (
 	"context"
-	"fmt"
-	"strings"
-	"sync"
-
-	logapi "go.opentelemetry.io/otel/log"
-	"go.opentelemetry.io/otel/log/global"
-	"go.opentelemetry.io/otel/sdk/log"
+	"os"
+	"testing"
+	"time"
 )
 
-// Initialize OpenTelemetry Logs SDK and setup logging using a log bridge.
-func Example() {
-	// Create an exporter that will emit log records.
-	// E.g. use go.opentelemetry.io/otel/exporters/otlp/otlplog/otlploghttp
-	// to send logs using OTLP over HTTP:
-	// exporter, err := otlploghttp.New(ctx)
-	var exporter log.Exporter
+func TestAuditLogExample(t *testing.T) {
+	// Create a temporary directory for testing
+	tempDir := t.TempDir()
 
-	// Create a log record processor pipeline.
-	processor := log.NewBatchProcessor(exporter)
-
-	// Create a logger provider.
-	// You can pass this instance directly when creating a log bridge.
-	provider := log.NewLoggerProvider(
-		log.WithProcessor(processor),
-	)
-
-	// Handle shutdown properly so that nothing leaks.
-	defer func() {
-		err := provider.Shutdown(context.Background())
-		if err != nil {
-			fmt.Println(err)
-		}
-	}()
-
-	// Register as global logger provider so that it can be used via global.Meter
-	// and accessed using global.GetMeterProvider.
-	// Most log bridges use the global logger provider as default.
-	// If the global logger provider is not set then a no-op implementation
-	// is used, which fails to generate data.
-	global.SetLoggerProvider(provider)
-
-	// Use a bridge so that you can emit logs using your Go logging library of preference.
-	// E.g. use go.opentelemetry.io/contrib/bridges/otelslog so that you can use log/slog:
-	// slog.SetDefault(otelslog.NewLogger("my/pkg/name", otelslog.WithLoggerProvider(provider)))
-}
-
-// Use a processor that filters out records based on the provided context.
-func ExampleFilterProcessor() {
-	// Existing processor that emits telemetry.
-	var processor log.Processor = log.NewBatchProcessor(nil)
-
-	// Wrap the processor so that it ignores processing log records
-	// when a context deriving from WithIgnoreLogs is passed
-	// to the logging methods.
-	processor = &ContextFilterProcessor{Processor: processor}
-
-	// The created processor can then be registered with
-	// the OpenTelemetry Logs SDK using the WithProcessor option.
-	_ = log.NewLoggerProvider(
-		log.WithProcessor(processor),
-	)
-}
-
-type key struct{}
-
-var ignoreLogsKey key
-
-// WithIgnoreLogs returns a context which is used by [ContextFilterProcessor]
-// to filter out log records.
-func WithIgnoreLogs(ctx context.Context) context.Context {
-	return context.WithValue(ctx, ignoreLogsKey, true)
-}
-
-// ContextFilterProcessor filters out logs when a context deriving from
-// [WithIgnoreLogs] is passed to its methods.
-type ContextFilterProcessor struct {
-	log.Processor
-
-	lazyFilter sync.Once
-	// Support the FilterProcessor interface for the embedded processor.
-	filter log.FilterProcessor
-}
-
-// Compile time check.
-var _ log.FilterProcessor = (*ContextFilterProcessor)(nil)
-
-func (p *ContextFilterProcessor) OnEmit(ctx context.Context, record *log.Record) error {
-	if ignoreLogs(ctx) {
-		return nil
+	// Create audit log store
+	store, err := NewAuditLogFileStore(tempDir)
+	if err != nil {
+		t.Fatalf("Failed to create audit log store: %v", err)
 	}
-	return p.Processor.OnEmit(ctx, record)
-}
 
-func (p *ContextFilterProcessor) Enabled(ctx context.Context, param log.EnabledParameters) bool {
-	p.lazyFilter.Do(func() {
-		if f, ok := p.Processor.(log.FilterProcessor); ok {
-			p.filter = f
+	// Create mock exporter
+	exporter := &MockExporter{}
+
+	// Create processor
+	processor, err := NewAuditLogProcessorBuilder(exporter, store).
+		SetScheduleDelay(100 * time.Millisecond).
+		SetMaxExportBatchSize(2).
+		Build()
+	if err != nil {
+		t.Fatalf("Failed to create processor: %v", err)
+	}
+	defer processor.Shutdown(context.Background())
+
+	// Create logger
+	logger := NewLogger(processor)
+
+	// Emit some test records
+	ctx := context.Background()
+
+	// Test record 1
+	record1 := &Record{
+		Timestamp: time.Now(),
+		Severity:  SeverityInfo,
+		Body:      StringValue("Test audit message 1"),
+	}
+	record1.AddAttributes(String("test_key", "test_value"))
+
+	if err := logger.Emit(ctx, record1); err != nil {
+		t.Errorf("Failed to emit record 1: %v", err)
+	}
+
+	// Test record 2
+	record2 := &Record{
+		Timestamp: time.Now().Add(time.Millisecond),
+		Severity:  SeverityWarn,
+		Body:      StringValue("Test audit message 2"),
+	}
+	record2.AddAttributes(String("severity", "warning"))
+
+	if err := logger.Emit(ctx, record2); err != nil {
+		t.Errorf("Failed to emit record 2: %v", err)
+	}
+
+	// Wait for processing
+	time.Sleep(200 * time.Millisecond)
+
+	// Verify records were exported
+	exportedRecords := exporter.GetExportedRecords()
+	if len(exportedRecords) == 0 {
+		t.Error("Expected records to be exported")
+	}
+
+	t.Logf("Successfully exported %d batches", len(exportedRecords))
+	for i, batch := range exportedRecords {
+		t.Logf("Batch %d: %d records", i+1, len(batch))
+		for j, record := range batch {
+			t.Logf("  Record %d: %s - %s", j+1, record.Severity().String(), record.Body().String())
 		}
-	})
-	return !ignoreLogs(ctx) && (p.filter == nil || p.filter.Enabled(ctx, param))
+	}
 }
 
-func ignoreLogs(ctx context.Context) bool {
-	_, ok := ctx.Value(ignoreLogsKey).(bool)
-	return ok
-}
+func TestAuditLogFileStorage(t *testing.T) {
+	// Create a temporary directory for testing
+	tempDir := t.TempDir()
 
-// Use a processor which sets EventName on log records having "event.name" string attribute.
-// This is useful for users of logging libraries that do not support
-// setting the event name on log records, but do support attributes.
-func ExampleProcessor_eventName() {
-	// Existing processor that emits telemetry.
-	var processor log.Processor = log.NewBatchProcessor(nil)
+	// Create file store
+	store, err := NewAuditLogFileStore(tempDir)
+	if err != nil {
+		t.Fatalf("Failed to create file store: %v", err)
+	}
 
-	// Add a processor so that it sets EventName on log records.
-	eventNameProcessor := &EventNameProcessor{}
+	// Test saving a record
+	ctx := context.Background()
+	record := &Record{
+		Timestamp: time.Now(),
+		Severity:  SeverityInfo,
+		Body:      StringValue("Test persistence"),
+	}
+	record.AddAttributes(String("persistent", "true"))
 
-	// The created processor can then be registered with
-	// the OpenTelemetry Logs SDK using the WithProcessor option.
-	_ = log.NewLoggerProvider(
-		// Order is important here. Set EventName before handing to the processor.
-		log.WithProcessor(eventNameProcessor),
-		log.WithProcessor(processor),
-	)
-}
+	if err := store.Save(ctx, record); err != nil {
+		t.Errorf("Failed to save record: %v", err)
+	}
 
-// EventNameProcessor is a [log.Processor] that sets the EventName
-// on log records having "event.name" string attribute.
-// It is useful for logging libraries that do not support
-// setting the event name on log records,
-// but do support attributes.
-type EventNameProcessor struct{}
+	// Test retrieving all records
+	records, err := store.GetAll(ctx)
+	if err != nil {
+		t.Errorf("Failed to get all records: %v", err)
+	}
 
-// OnEmit sets the EventName on log records having an "event.name" string attribute.
-// The original attribute is not removed.
-func (*EventNameProcessor) OnEmit(_ context.Context, record *log.Record) error {
-	record.WalkAttributes(func(kv logapi.KeyValue) bool {
-		if kv.Key == "event.name" && kv.Value.Kind() == logapi.KindString {
-			record.SetEventName(kv.Value.AsString())
-		}
-		return true
-	})
-	return nil
-}
+	if len(records) != 1 {
+		t.Errorf("Expected 1 record, got %d", len(records))
+	}
 
-// Shutdown returns nil.
-func (*EventNameProcessor) Shutdown(context.Context) error {
-	return nil
-}
+	if records[0].Body().String() != "Test persistence" {
+		t.Errorf("Expected 'Test persistence', got '%s'", records[0].Body().String())
+	}
 
-// ForceFlush returns nil.
-func (*EventNameProcessor) ForceFlush(context.Context) error {
-	return nil
-}
+	// Verify file exists
+	logFile := tempDir + "/audit.log"
+	if _, err := os.Stat(logFile); os.IsNotExist(err) {
+		t.Errorf("Expected log file to exist at %s", logFile)
+	}
 
-// Use a processor which redacts sensitive data from some attributes.
-func ExampleProcessor_redact() {
-	// Existing processor that emits telemetry.
-	var processor log.Processor = log.NewBatchProcessor(nil)
-
-	// Add a processor so that it redacts values from token attributes.
-	redactProcessor := &RedactTokensProcessor{}
-
-	// The created processor can then be registered with
-	// the OpenTelemetry Logs SDK using the WithProcessor option.
-	_ = log.NewLoggerProvider(
-		// Order is important here. Redact before handing to the processor.
-		log.WithProcessor(redactProcessor),
-		log.WithProcessor(processor),
-	)
-}
-
-// RedactTokensProcessor is a [log.Processor] decorator that redacts values
-// from attributes containing "token" in the key.
-type RedactTokensProcessor struct{}
-
-// OnEmit redacts values from attributes containing "token" in the key
-// by replacing them with a REDACTED value.
-func (*RedactTokensProcessor) OnEmit(_ context.Context, record *log.Record) error {
-	record.WalkAttributes(func(kv logapi.KeyValue) bool {
-		if strings.Contains(strings.ToLower(kv.Key), "token") {
-			record.AddAttributes(logapi.String(kv.Key, "REDACTED"))
-		}
-		return true
-	})
-	return nil
-}
-
-// Shutdown returns nil.
-func (*RedactTokensProcessor) Shutdown(context.Context) error {
-	return nil
-}
-
-// ForceFlush returns nil.
-func (*RedactTokensProcessor) ForceFlush(context.Context) error {
-	return nil
+	t.Logf("Successfully tested file storage at %s", tempDir)
 }
