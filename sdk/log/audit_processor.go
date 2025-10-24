@@ -43,7 +43,6 @@ func (h *DefaultAuditExceptionHandler) Handle(exception *AuditException) {
 }
 
 type RetryPolicy struct {
-	MaxAttempts       int
 	InitialBackoff    time.Duration
 	MaxBackoff        time.Duration
 	BackoffMultiplier float64
@@ -51,7 +50,6 @@ type RetryPolicy struct {
 
 func GetDefaultRetryPolicy() RetryPolicy {
 	return RetryPolicy{
-		MaxAttempts:       3,
 		InitialBackoff:    time.Second,
 		MaxBackoff:        time.Minute,
 		BackoffMultiplier: 2.0,
@@ -329,35 +327,18 @@ func (p *AuditLogProcessor) calculateRetryDelay(attemptNumber int) int64 {
 }
 
 func (p *AuditLogProcessor) handleExportFailure(records []Record, cause error) {
-	currentAttempt := p.currentRetryAttempt.Add(1)
+	p.currentRetryAttempt.Add(1)
 	p.lastRetryTimestamp.Store(time.Now().UnixMilli())
 
-	if currentAttempt <= int32(p.config.RetryPolicy.MaxAttempts) {
-		p.queueMutex.Lock()
-		for _, record := range records {
-			priority := getSeverityPriority(record.Severity())
-			heap.Push(p.queue, PriorityRecord{
-				Record:   record,
-				Priority: priority,
-			})
-		}
-		p.queueMutex.Unlock()
-		return
+	p.queueMutex.Lock()
+	for _, record := range records {
+		priority := getSeverityPriority(record.Severity())
+		heap.Push(p.queue, PriorityRecord{
+			Record:   record,
+			Priority: priority,
+		})
 	}
-
-	p.currentRetryAttempt.Store(0)
-	p.lastRetryTimestamp.Store(0)
-
-	message := fmt.Sprintf("Export failed after %d retry attempts. Last error: %v",
-		p.config.RetryPolicy.MaxAttempts, cause)
-
-	exception := &AuditException{
-		Message:    message,
-		Cause:      cause,
-		LogRecords: records,
-	}
-
-	p.config.ExceptionHandler.Handle(exception)
+	p.queueMutex.Unlock()
 }
 
 func (p *AuditLogProcessor) ForceFlush(ctx context.Context) error {

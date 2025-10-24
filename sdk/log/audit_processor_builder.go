@@ -67,9 +67,6 @@ func (b *AuditLogProcessorBuilder) SetExporterTimeout(timeout time.Duration) *Au
 }
 
 func (b *AuditLogProcessorBuilder) SetRetryPolicy(policy RetryPolicy) *AuditLogProcessorBuilder {
-	if policy.MaxAttempts <= 0 {
-		panic("retry policy max attempts must be positive")
-	}
 	if policy.InitialBackoff < 0 {
 		panic("retry policy initial backoff must be non-negative")
 	}
@@ -126,9 +123,6 @@ func (b *AuditLogProcessorBuilder) ValidateConfig() error {
 	}
 	if b.config.ExporterTimeout < 0 {
 		return fmt.Errorf("exporter timeout must be non-negative")
-	}
-	if b.config.RetryPolicy.MaxAttempts <= 0 {
-		return fmt.Errorf("retry policy max attempts must be positive")
 	}
 	if b.config.RetryPolicy.InitialBackoff < 0 {
 		return fmt.Errorf("retry policy initial backoff must be non-negative")
