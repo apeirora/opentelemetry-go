@@ -7,13 +7,13 @@ import (
 	"context"
 	"fmt"
 	"time"
+
+	"go.opentelemetry.io/otel/log"
 )
 
-// ExampleUsage demonstrates how to use the audit log feature
 func ExampleUsage() {
 	fmt.Println("=== OpenTelemetry Go Audit Log Example ===")
 
-	// 1. Create audit log store (file-based for persistence)
 	store, err := NewAuditLogFileStore("/tmp/audit_logs")
 	if err != nil {
 		fmt.Printf("Failed to create audit log store: %v\n", err)
@@ -21,21 +21,17 @@ func ExampleUsage() {
 	}
 	fmt.Println("✅ Created file-based audit log store at /tmp/audit_logs")
 
-	// 2. Create custom exporter
 	exporter := &ExampleExporter{}
 	fmt.Println("✅ Created custom exporter")
 
-	// 3. Create audit exception handler
 	exceptionHandler := &ExampleExceptionHandler{}
 	fmt.Println("✅ Created custom exception handler")
 
-	// 4. Create audit log processor with builder
 	processor, err := NewAuditLogProcessorBuilder(exporter, store).
-		SetScheduleDelay(2 * time.Second).    // Export every 2 seconds
-		SetMaxExportBatchSize(5).             // Small batch for demo
-		SetExporterTimeout(10 * time.Second). // 10 second timeout
+		SetScheduleDelay(2 * time.Second).
+		SetMaxExportBatchSize(5).
+		SetExporterTimeout(10 * time.Second).
 		SetRetryPolicy(RetryPolicy{
-			MaxAttempts:       3,
 			InitialBackoff:    time.Second,
 			MaxBackoff:        5 * time.Second,
 			BackoffMultiplier: 2.0,
@@ -50,7 +46,6 @@ func ExampleUsage() {
 	}
 	fmt.Println("✅ Created audit log processor")
 
-	// Ensure cleanup on exit
 	defer func() {
 		fmt.Println("\n=== Shutting down audit log processor ===")
 		if err := processor.Shutdown(context.Background()); err != nil {
@@ -59,65 +54,54 @@ func ExampleUsage() {
 		fmt.Println("✅ Audit log processor shutdown complete")
 	}()
 
-	// 5. Create logger using the audit processor
-	logger := NewLogger(processor)
-	fmt.Println("✅ Created logger with audit processor")
-
-	// 6. Emit various audit log records
 	fmt.Println("\n=== Emitting audit log records ===")
 
 	ctx := context.Background()
 
-	// Critical security event
-	securityRecord := &Record{
-		Timestamp: time.Now(),
-		Severity:  SeverityError,
-		Body:      StringValue("SECURITY: Unauthorized access attempt"),
-	}
+	securityRecord := Record{}
+	securityRecord.SetTimestamp(time.Now())
+	securityRecord.SetSeverity(log.SeverityError)
+	securityRecord.SetBody(log.StringValue("SECURITY: Unauthorized access attempt"))
 	securityRecord.AddAttributes(
-		String("user_id", "hacker123"),
-		String("ip_address", "192.168.1.100"),
-		String("event_type", "security_breach"),
+		log.String("user_id", "hacker123"),
+		log.String("ip_address", "192.168.1.100"),
+		log.String("event_type", "security_breach"),
 	)
 
-	if err := logger.Emit(ctx, securityRecord); err != nil {
+	if err := processor.OnEmit(ctx, &securityRecord); err != nil {
 		fmt.Printf("❌ Failed to emit security record: %v\n", err)
 	} else {
 		fmt.Println("✅ Emitted security audit record")
 	}
 
-	// User login event
-	loginRecord := &Record{
-		Timestamp: time.Now().Add(time.Millisecond),
-		Severity:  SeverityInfo,
-		Body:      StringValue("USER: Successful login"),
-	}
+	loginRecord := Record{}
+	loginRecord.SetTimestamp(time.Now().Add(time.Millisecond))
+	loginRecord.SetSeverity(log.SeverityInfo)
+	loginRecord.SetBody(log.StringValue("USER: Successful login"))
 	loginRecord.AddAttributes(
-		String("user_id", "john.doe"),
-		String("session_id", "sess_abc123"),
-		String("login_method", "password"),
+		log.String("user_id", "john.doe"),
+		log.String("session_id", "sess_abc123"),
+		log.String("login_method", "password"),
 	)
 
-	if err := logger.Emit(ctx, loginRecord); err != nil {
+	if err := processor.OnEmit(ctx, &loginRecord); err != nil {
 		fmt.Printf("❌ Failed to emit login record: %v\n", err)
 	} else {
 		fmt.Println("✅ Emitted login audit record")
 	}
 
-	// Data access event
-	dataRecord := &Record{
-		Timestamp: time.Now().Add(2 * time.Millisecond),
-		Severity:  SeverityWarn,
-		Body:      StringValue("DATA: Sensitive data accessed"),
-	}
+	dataRecord := Record{}
+	dataRecord.SetTimestamp(time.Now().Add(2 * time.Millisecond))
+	dataRecord.SetSeverity(log.SeverityWarn)
+	dataRecord.SetBody(log.StringValue("DATA: Sensitive data accessed"))
 	dataRecord.AddAttributes(
-		String("user_id", "jane.smith"),
-		String("data_type", "customer_pii"),
-		String("operation", "read"),
-		String("record_count", "150"),
+		log.String("user_id", "jane.smith"),
+		log.String("data_type", "customer_pii"),
+		log.String("operation", "read"),
+		log.String("record_count", "150"),
 	)
 
-	if err := logger.Emit(ctx, dataRecord); err != nil {
+	if err := processor.OnEmit(ctx, &dataRecord); err != nil {
 		fmt.Printf("❌ Failed to emit data access record: %v\n", err)
 	} else {
 		fmt.Println("✅ Emitted data access audit record")
@@ -125,7 +109,6 @@ func ExampleUsage() {
 
 	fmt.Printf("\n=== Waiting for processing (queue size: %d) ===\n", processor.GetQueueSize())
 
-	// Wait for processing to complete
 	time.Sleep(5 * time.Second)
 
 	fmt.Printf("Final queue size: %d\n", processor.GetQueueSize())
@@ -134,7 +117,6 @@ func ExampleUsage() {
 	fmt.Println("\n=== Example completed successfully! ===")
 }
 
-// ExampleExporter is a simple exporter that writes logs to console
 type ExampleExporter struct{}
 
 func (e *ExampleExporter) Export(ctx context.Context, records []Record) error {
@@ -146,9 +128,9 @@ func (e *ExampleExporter) Export(ctx context.Context, records []Record) error {
 			record.Severity().String(),
 			record.Body().String())
 
-		// Print attributes if any
-		record.Attributes().Do(func(kv KeyValue) {
-			fmt.Printf("    %s: %s\n", kv.Key, kv.Value.AsString())
+		record.WalkAttributes(func(kv log.KeyValue) bool {
+			fmt.Printf("    %s: %s\n", kv.Key, kv.Value.String())
+			return true
 		})
 	}
 	fmt.Println("=====================================")
@@ -165,7 +147,6 @@ func (e *ExampleExporter) ForceFlush(ctx context.Context) error {
 	return nil
 }
 
-// ExampleExceptionHandler handles audit exceptions
 type ExampleExceptionHandler struct {
 	alertCount int
 }
@@ -178,4 +159,3 @@ func (h *ExampleExceptionHandler) Handle(exception *AuditException) {
 	}
 	fmt.Printf("   Affected records: %d\n", len(exception.LogRecords))
 }
-

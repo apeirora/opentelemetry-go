@@ -308,10 +308,9 @@ func TestAuditLogProcessor(t *testing.T) {
 			AuditLogStore:      store,
 			ExceptionHandler:   exceptionHandler,
 			ScheduleDelay:      50 * time.Millisecond,
-			MaxExportBatchSize: 5,
+			MaxExportBatchSize: 1,
 			ExporterTimeout:    time.Second,
 			RetryPolicy: RetryPolicy{
-				MaxAttempts:       2, // Reduced for faster testing
 				InitialBackoff:    10 * time.Millisecond,
 				MaxBackoff:        50 * time.Millisecond,
 				BackoffMultiplier: 2.0,
