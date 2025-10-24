@@ -11,6 +11,7 @@ This package provides audit log storage capabilities for the OpenTelemetry Go SD
 - **Thread-Safe**: Concurrent access support with proper locking
 - **Exception Handling**: Customizable error handling for audit failures
 - **Memory Store**: In-memory implementation for testing and development
+- **Storage Extensions**: Compatible with OpenTelemetry Collector storage backends (File, Redis, SQL, custom)
 
 ## Components
 
@@ -28,7 +29,9 @@ type AuditLogStore interface {
 
 ### Implementations
 
-#### AuditLogFileStore
+#### Legacy Implementations
+
+##### AuditLogFileStore
 
 File-based persistent storage that writes audit logs to disk:
 
@@ -39,13 +42,61 @@ if err != nil {
 }
 ```
 
-#### AuditLogInMemoryStore
+##### AuditLogInMemoryStore
 
 In-memory storage for testing and development:
 
 ```go
 store := NewAuditLogInMemoryStore()
 ```
+
+#### Storage Extension (Recommended)
+
+The new Storage Extension pattern provides compatibility with OpenTelemetry Collector storage backends and supports multiple storage types:
+
+##### Simple Key-Value Storage (In-Memory)
+
+```go
+client := NewSimpleKeyValueStorageClient()
+adapter, err := NewAuditLogStorageExtensionAdapter(client)
+```
+
+##### BoltDB Storage (File-Based)
+
+```go
+client, err := NewBoltDBStorageClient("/var/log/audit/storage.db")
+adapter, err := NewAuditLogStorageExtensionAdapter(client)
+```
+
+##### Redis Storage (Distributed)
+
+```go
+config := RedisStorageConfig{
+    Endpoint:   "localhost:6379",
+    Password:   "",
+    DB:         0,
+    Prefix:     "audit_",
+    Expiration: 24 * time.Hour,
+}
+client, err := NewRedisStorageClient(config)
+adapter, err := NewAuditLogStorageExtensionAdapter(client)
+```
+
+##### SQL Database Storage
+
+```go
+config := SQLStorageConfig{
+    Driver:     "postgres",
+    Datasource: "postgresql://user:pass@localhost/auditdb",
+    TableName:  "audit_logs",
+}
+client, err := NewSQLStorageClient(config)
+adapter, err := NewAuditLogStorageExtensionAdapter(client)
+```
+
+**For detailed information about storage extensions, see:**
+- [Storage Extension README](STORAGE_EXTENSION_README.md) - Complete documentation
+- [Storage Migration Guide](STORAGE_MIGRATION_GUIDE.md) - Migration from legacy storage
 
 ### AuditLogProcessor
 
