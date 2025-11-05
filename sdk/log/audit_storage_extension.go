@@ -480,21 +480,8 @@ type RedisStorageConfig struct {
 	Expiration time.Duration
 }
 
-func NewRedisStorageClient(config RedisStorageConfig) (*RedisStorageClient, error) {
-	if config.Endpoint == "" {
-		return nil, fmt.Errorf("endpoint cannot be empty")
-	}
-
-	client := &RedisStorageClient{
-		endpoint:   config.Endpoint,
-		password:   config.Password,
-		db:         config.DB,
-		prefix:     config.Prefix,
-		expiration: config.Expiration,
-		storage:    make(map[string][]byte),
-	}
-
-	return client, nil
+func NewRedisStorageClient(config RedisStorageConfig) (StorageClient, error) {
+	return NewRealRedisStorageClient(config)
 }
 
 func (c *RedisStorageClient) Get(ctx context.Context, key string) ([]byte, error) {
