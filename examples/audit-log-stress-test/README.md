@@ -305,12 +305,12 @@ After running the stress test:
 
 ## Additional Resources
 
-- **[Storage Examples](docs/STORAGE_EXAMPLES.md)** - Detailed examples for each storage backend
-- **[Storage Quickstart](docs/STORAGE_QUICKSTART.md)** - Quick start guide for storage backends
-- **[Storage Integration Summary](docs/STORAGE_INTEGRATION_SUMMARY.md)** - Storage integration overview
-- **[Storage Migration Guide](docs/STORAGE_MIGRATION_GUIDE.md)** - Guide for migrating storage implementations
-- **[Audit Log Summary](docs/AUDIT_LOG_SUMMARY.md)** - Audit log feature summary
-- **[Audit Log Comparison](docs/AUDIT_LOG_COMPARISON.md)** - Comparison with other audit log solutions
-- **[Storage Extension README](../../sdk/log/STORAGE_EXTENSION_README.md)** - Complete storage extension documentation
-- **[Audit Log README](../../sdk/log/AUDIT_LOG_README.md)** - Audit processor documentation
+### Storage Documentation
+
+- **[📖 START HERE](docs/START_HERE.md)** - Quick start examples
+- **[Quick Start API](docs/QUICK_START_SIMPLE_API.md)** - All storage options
+- **[User Guide](docs/USER_GUIDE_SIMPLE_STORAGE.md)** - Complete guide
+- **[Storage Examples](docs/STORAGE_EXAMPLES.md)** - CLI examples for this stress test
+- **[Audit Log Summary](docs/AUDIT_LOG_SUMMARY.md)** - Audit log feature overview
+- **[SDK API Docs](../../sdk/log/AUDIT_LOG_README.md)** - Audit processor API documentation
 
