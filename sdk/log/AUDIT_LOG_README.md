@@ -94,9 +94,10 @@ client, err := NewSQLStorageClient(config)
 adapter, err := NewAuditLogStorageExtensionAdapter(client)
 ```
 
-**For detailed information about storage extensions, see:**
-- [Storage Extension README](STORAGE_EXTENSION_README.md) - Complete documentation
-- [Storage Migration Guide](STORAGE_MIGRATION_GUIDE.md) - Migration from legacy storage
+**For detailed information about storage, see:**
+- [📖 Storage Guide](../../examples/audit-log-stress-test/docs/START_HERE.md) - Quick start examples
+- [User Guide](../../examples/audit-log-stress-test/docs/USER_GUIDE_SIMPLE_STORAGE.md) - Complete guide
+- [Quick Start API](../../examples/audit-log-stress-test/docs/QUICK_START_SIMPLE_API.md) - All storage options
 
 ### AuditLogProcessor
 

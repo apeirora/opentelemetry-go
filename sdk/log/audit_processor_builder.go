@@ -4,12 +4,15 @@
 package log
 
 import (
+	"context"
 	"fmt"
 	"time"
 )
 
 type AuditLogProcessorBuilder struct {
-	config AuditLogProcessorConfig
+	config        AuditLogProcessorConfig
+	storageConfig *storageConfig
+	extension     StorageExtension
 }
 
 func NewAuditLogProcessorBuilder(exporter Exporter, store AuditLogStore) *AuditLogProcessorBuilder {
@@ -24,6 +27,24 @@ func NewAuditLogProcessorBuilder(exporter Exporter, store AuditLogStore) *AuditL
 		config: AuditLogProcessorConfig{
 			Exporter:           exporter,
 			AuditLogStore:      store,
+			ExceptionHandler:   &DefaultAuditExceptionHandler{},
+			ScheduleDelay:      time.Second,
+			MaxExportBatchSize: 512,
+			ExporterTimeout:    30 * time.Second,
+			RetryPolicy:        GetDefaultRetryPolicy(),
+			WaitOnExport:       false,
+		},
+	}
+}
+
+func NewAuditLogProcessorWithStorage(exporter Exporter) *AuditLogProcessorBuilder {
+	if exporter == nil {
+		panic("exporter cannot be nil")
+	}
+
+	return &AuditLogProcessorBuilder{
+		config: AuditLogProcessorConfig{
+			Exporter:           exporter,
 			ExceptionHandler:   &DefaultAuditExceptionHandler{},
 			ScheduleDelay:      time.Second,
 			MaxExportBatchSize: 512,
@@ -86,10 +107,49 @@ func (b *AuditLogProcessorBuilder) SetWaitOnExport(wait bool) *AuditLogProcessor
 }
 
 func (b *AuditLogProcessorBuilder) Build() (*AuditLogProcessor, error) {
+	ctx := context.Background()
+
+	if b.config.AuditLogStore == nil && b.storageConfig != nil {
+		extension, err := b.createStorageExtension()
+		if err != nil {
+			return nil, fmt.Errorf("failed to create storage extension: %w", err)
+		}
+
+		if err := extension.Start(ctx); err != nil {
+			return nil, fmt.Errorf("failed to start storage extension: %w", err)
+		}
+
+		clientName := "audit_processor"
+		if b.storageConfig.clientName != "" {
+			clientName = b.storageConfig.clientName
+		}
+
+		client, err := extension.GetClient(ctx, clientName)
+		if err != nil {
+			extension.Shutdown(ctx)
+			return nil, fmt.Errorf("failed to get storage client: %w", err)
+		}
+
+		adapter, err := NewAuditLogStorageExtensionAdapter(client)
+		if err != nil {
+			extension.Shutdown(ctx)
+			return nil, fmt.Errorf("failed to create storage adapter: %w", err)
+		}
+
+		b.config.AuditLogStore = adapter
+		b.extension = extension
+	}
+
 	processor, err := NewAuditLogProcessor(b.config)
 	if err != nil {
+		if b.extension != nil {
+			b.extension.Shutdown(ctx)
+		}
 		return nil, fmt.Errorf("failed to create audit log processor: %w", err)
 	}
+
+	processor.extension = b.extension
+
 	return processor, nil
 }
 
