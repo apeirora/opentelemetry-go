@@ -90,17 +90,8 @@ func RunStressTest(config *StressTestConfig) error {
 	fmt.Println("✅ OTLP Exporter created")
 
 	fmt.Println()
-	fmt.Println("Step 2: Creating Audit Log Store")
-	store, err := createStore(config)
-	if err != nil {
-		fmt.Printf("❌ Failed to create store: %v\n", err)
-		return err
-	}
-	fmt.Printf("✅ %s store created\n", config.StorageType)
-
-	fmt.Println()
-	fmt.Println("Step 3: Creating Audit Processor")
-	processor, err := sdklog.NewAuditLogProcessorBuilder(otlpExporter, store).
+	fmt.Println("Step 2: Creating Audit Processor with Storage")
+	processor, err := createProcessorBuilder(config, otlpExporter).
 		SetScheduleDelay(config.ScheduleDelay).
 		SetMaxExportBatchSize(config.MaxExportBatch).
 		SetExporterTimeout(config.ExporterTimeout).
@@ -110,10 +101,10 @@ func RunStressTest(config *StressTestConfig) error {
 		return err
 	}
 	defer processor.Shutdown(context.Background())
-	fmt.Println("✅ Audit processor created")
+	fmt.Printf("✅ Audit processor created with %s storage\n", config.StorageType)
 
 	fmt.Println()
-	fmt.Println("Step 4: Starting stress test - emitting logs")
+	fmt.Println("Step 3: Starting stress test - emitting logs")
 	fmt.Println("────────────────────────────────────────────")
 
 	startTime := time.Now()
@@ -162,7 +153,7 @@ func RunStressTest(config *StressTestConfig) error {
 	fmt.Printf("   Queue:   %d pending\n", processor.GetQueueSize())
 
 	fmt.Println()
-	fmt.Println("Step 5: Flushing remaining logs to OTEL Collector")
+	fmt.Println("Step 4: Flushing remaining logs to OTEL Collector")
 	fmt.Println("   This may take a while for large batches...")
 
 	flushStart := time.Now()
@@ -178,7 +169,7 @@ func RunStressTest(config *StressTestConfig) error {
 	fmt.Printf("   Retry attempts:   %d\n", processor.GetRetryAttempts())
 
 	fmt.Println()
-	fmt.Println("Step 6: Test Summary")
+	fmt.Println("Step 5: Test Summary")
 	fmt.Println("════════════════════════════════════════════")
 	fmt.Printf("🎯 Test Run UUID:     %s\n", config.TestRunUUID)
 	fmt.Printf("📝 Total Logs Sent:   %d\n", successCount.Load())
@@ -275,61 +266,56 @@ func RunMegaStressTestWithStorage(storageType StorageType, storagePath, redisEnd
 	return RunStressTest(config)
 }
 
-func createStore(config *StressTestConfig) (sdklog.AuditLogStore, error) {
+func createProcessorBuilder(config *StressTestConfig, exporter sdklog.Exporter) *sdklog.AuditLogProcessorBuilder {
+	builder := sdklog.NewAuditLogProcessorWithStorage(exporter)
+
 	switch config.StorageType {
 	case StorageTypeInMemory:
-		client := sdklog.NewSimpleKeyValueStorageClient()
-		return sdklog.NewAuditLogStorageExtensionAdapter(client)
+		builder = builder.WithMemoryStorage()
 
 	case StorageTypeFile:
 		path := config.StoragePath
 		if path == "" {
-			path = "./stress_test_storage.db"
+			path = "./stress_test_storage"
 		}
-		client, err := sdklog.NewBoltDBStorageClient(path)
-		if err != nil {
-			return nil, fmt.Errorf("failed to create file storage: %w", err)
-		}
-		return sdklog.NewAuditLogStorageExtensionAdapter(client)
+		builder = builder.WithFileStorage(path)
 
 	case StorageTypeRedis:
-		redisConfig := sdklog.RedisStorageConfig{
-			Endpoint:   config.RedisEndpoint,
-			Password:   config.RedisPassword,
-			DB:         config.RedisDB,
-			Prefix:     "stress_test_",
-			Expiration: 24 * time.Hour,
+		endpoint := config.RedisEndpoint
+		if endpoint == "" {
+			endpoint = "localhost:6379"
 		}
-		if redisConfig.Endpoint == "" {
-			redisConfig.Endpoint = "localhost:6379"
+		
+		opts := []sdklog.RedisStorageOption{
+			sdklog.WithRedisEndpoint(endpoint),
+			sdklog.WithRedisKeyPrefix("stress_test_"),
+			sdklog.WithRedisKeyExpiration(24 * time.Hour),
 		}
-		client, err := sdklog.NewRedisStorageClient(redisConfig)
-		if err != nil {
-			return nil, fmt.Errorf("failed to create Redis storage: %w", err)
+		
+		if config.RedisPassword != "" {
+			opts = append(opts, sdklog.WithRedisAuth(config.RedisPassword, config.RedisDB))
 		}
-		return sdklog.NewAuditLogStorageExtensionAdapter(client)
+		
+		builder = builder.WithRedisStorage(opts...)
 
 	case StorageTypeSQL:
-		sqlConfig := sdklog.SQLStorageConfig{
-			Driver:     config.SQLDriver,
-			Datasource: config.SQLDatasource,
-			TableName:  "stress_test_logs",
+		driver := config.SQLDriver
+		if driver == "" {
+			driver = "sqlite3"
 		}
-		if sqlConfig.Driver == "" {
-			sqlConfig.Driver = "sqlite3"
+		datasource := config.SQLDatasource
+		if datasource == "" {
+			datasource = ":memory:"
 		}
-		if sqlConfig.Datasource == "" {
-			sqlConfig.Datasource = ":memory:"
-		}
-		client, err := sdklog.NewSQLStorageClient(sqlConfig)
-		if err != nil {
-			return nil, fmt.Errorf("failed to create SQL storage: %w", err)
-		}
-		return sdklog.NewAuditLogStorageExtensionAdapter(client)
-
-	default:
-		return nil, fmt.Errorf("unknown storage type: %s", config.StorageType)
+		
+		builder = builder.WithSQLStorage(
+			sdklog.WithSQLDriver(driver),
+			sdklog.WithSQLDatasource(datasource),
+			sdklog.WithSQLTable("stress_test_logs"),
+		)
 	}
+
+	return builder
 }
 
 func generateUUID() string {

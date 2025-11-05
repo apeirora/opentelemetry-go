@@ -139,8 +139,9 @@ type AuditLogProcessor struct {
 	currentRetryAttempt atomic.Int32
 	lastRetryTimestamp  atomic.Int64
 
-	stopChan chan struct{}
-	wg       sync.WaitGroup
+	stopChan  chan struct{}
+	wg        sync.WaitGroup
+	extension StorageExtension
 }
 
 func NewAuditLogProcessor(config AuditLogProcessorConfig) (*AuditLogProcessor, error) {
@@ -372,7 +373,15 @@ func (p *AuditLogProcessor) Shutdown(ctx context.Context) error {
 		close(p.stopChan)
 		p.wg.Wait()
 
-		return p.ForceFlush(ctx)
+		err := p.ForceFlush(ctx)
+
+		if p.extension != nil {
+			if shutdownErr := p.extension.Shutdown(ctx); shutdownErr != nil && err == nil {
+				err = shutdownErr
+			}
+		}
+
+		return err
 	}
 
 	return nil
