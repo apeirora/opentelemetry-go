@@ -132,8 +132,12 @@ func WithHeaders(headers map[string]string) Option {
 	return wrappedOption{otlpconfig.WithHeaders(headers)}
 }
 
-// WithTimeout tells the driver the max waiting time for the backend to process
-// each spans batch.  If unset, the default will be 10 seconds.
+// WithTimeout sets the max amount of time a client will attempt to export a
+// batch of spans. This takes precedence over any retry settings defined with
+// WithRetry, once this time limit has been reached the export is abandoned
+// and the batch of spans is dropped.
+//
+// If unset, the default timeout will be set to 10 seconds.
 func WithTimeout(duration time.Duration) Option {
 	return wrappedOption{otlpconfig.WithTimeout(duration)}
 }

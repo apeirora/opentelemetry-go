@@ -136,7 +136,7 @@ func (d *client) UploadTraces(ctx context.Context, protoSpans []*tracepb.Resourc
 		return err
 	}
 
-	ctx, cancel := d.contextWithStop(ctx)
+	ctx, cancel := d.exportContext(ctx)
 	defer cancel()
 
 	request, err := d.newRequest(rawRequest)
@@ -153,11 +153,10 @@ func (d *client) UploadTraces(ctx context.Context, protoSpans []*tracepb.Resourc
 
 		request.reset(ctx)
 		resp, err := d.client.Do(request.Request)
-		var urlErr *url.Error
-		if errors.As(err, &urlErr) && urlErr.Temporary() {
-			return newResponseError(http.Header{}, err)
-		}
 		if err != nil {
+			if isRetryableConnectionError(err) {
+				return newResponseError(http.Header{}, err)
+			}
 			return err
 		}
 
@@ -379,17 +378,74 @@ func (d *client) getScheme() string {
 }
 
 func (d *client) contextWithStop(ctx context.Context) (context.Context, context.CancelFunc) {
-	// Unify the parent context Done signal with the client's stop
-	// channel.
 	ctx, cancel := context.WithCancel(ctx)
 	go func(ctx context.Context, cancel context.CancelFunc) {
 		select {
 		case <-ctx.Done():
-			// Nothing to do, either cancelled or deadline
-			// happened.
 		case <-d.stopCh:
 			cancel()
 		}
 	}(ctx, cancel)
 	return ctx, cancel
+}
+
+func (d *client) exportContext(parent context.Context) (context.Context, context.CancelFunc) {
+	var (
+		ctx    context.Context
+		cancel context.CancelFunc
+	)
+
+	if d.cfg.Timeout > 0 {
+		ctx, cancel = context.WithTimeoutCause(parent, d.cfg.Timeout, errors.New("exporter export timeout"))
+	} else {
+		ctx, cancel = context.WithCancel(parent)
+	}
+
+	go func() {
+		select {
+		case <-ctx.Done():
+		case <-d.stopCh:
+			cancel()
+		}
+	}()
+
+	return ctx, cancel
+}
+
+func isRetryableConnectionError(err error) bool {
+	if err == nil {
+		return false
+	}
+
+	var urlErr *url.Error
+	if errors.As(err, &urlErr) {
+		if urlErr.Err != nil {
+			var netErr net.Error
+			if errors.As(urlErr.Err, &netErr) {
+				if netErr.Timeout() || netErr.Temporary() {
+					return true
+				}
+			}
+			var opErr *net.OpError
+			if errors.As(urlErr.Err, &opErr) {
+				return true
+			}
+			if errors.Is(urlErr.Err, context.DeadlineExceeded) {
+				return true
+			}
+		}
+		return true
+	}
+
+	var netErr net.Error
+	if errors.As(err, &netErr) {
+		return netErr.Timeout() || netErr.Temporary()
+	}
+
+	var opErr *net.OpError
+	if errors.As(err, &opErr) {
+		return true
+	}
+
+	return false
 }
