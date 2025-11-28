@@ -33,6 +33,7 @@ type client struct {
 	compression Compression
 	requestFunc retry.RequestFunc
 	httpClient  *http.Client
+	timeout     time.Duration
 }
 
 // Keep it in sync with golang's DefaultTransport from net/http! We
@@ -103,6 +104,7 @@ func newClient(cfg oconf.Config) (*client, error) {
 		req:         req,
 		requestFunc: cfg.RetryConfig.RequestFunc(evaluate),
 		httpClient:  httpClient,
+		timeout:     cfg.Metrics.Timeout,
 	}, nil
 }
 
@@ -138,6 +140,9 @@ func (c *client) UploadMetrics(ctx context.Context, protoMetrics *metricpb.Resou
 		return err
 	}
 
+	ctx, cancel := c.exportContext(ctx)
+	defer cancel()
+
 	return errors.Join(uploadErr, c.requestFunc(ctx, func(iCtx context.Context) error {
 		select {
 		case <-iCtx.Done():
@@ -147,11 +152,10 @@ func (c *client) UploadMetrics(ctx context.Context, protoMetrics *metricpb.Resou
 
 		request.reset(iCtx)
 		resp, err := c.httpClient.Do(request.Request)
-		var urlErr *url.Error
-		if errors.As(err, &urlErr) && urlErr.Temporary() {
-			return newResponseError(http.Header{}, err)
-		}
 		if err != nil {
+			if isRetryableConnectionError(err) {
+				return newResponseError(http.Header{}, err)
+			}
 			return err
 		}
 		if resp != nil && resp.Body != nil {
@@ -345,4 +349,57 @@ func evaluate(err error) (bool, time.Duration) {
 	}
 
 	return true, time.Duration(rErr.throttle)
+}
+
+func (c *client) exportContext(parent context.Context) (context.Context, context.CancelFunc) {
+	var (
+		ctx    context.Context
+		cancel context.CancelFunc
+	)
+
+	if c.timeout > 0 {
+		ctx, cancel = context.WithTimeoutCause(parent, c.timeout, errors.New("exporter export timeout"))
+	} else {
+		ctx, cancel = context.WithCancel(parent)
+	}
+
+	return ctx, cancel
+}
+
+func isRetryableConnectionError(err error) bool {
+	if err == nil {
+		return false
+	}
+
+	var urlErr *url.Error
+	if errors.As(err, &urlErr) {
+		if urlErr.Err != nil {
+			var netErr net.Error
+			if errors.As(urlErr.Err, &netErr) {
+				if netErr.Timeout() || netErr.Temporary() {
+					return true
+				}
+			}
+			var opErr *net.OpError
+			if errors.As(urlErr.Err, &opErr) {
+				return true
+			}
+			if errors.Is(urlErr.Err, context.DeadlineExceeded) {
+				return true
+			}
+		}
+		return true
+	}
+
+	var netErr net.Error
+	if errors.As(err, &netErr) {
+		return netErr.Timeout() || netErr.Temporary()
+	}
+
+	var opErr *net.OpError
+	if errors.As(err, &opErr) {
+		return true
+	}
+
+	return false
 }
