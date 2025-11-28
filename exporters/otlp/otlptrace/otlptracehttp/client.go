@@ -377,18 +377,6 @@ func (d *client) getScheme() string {
 	return "https"
 }
 
-func (d *client) contextWithStop(ctx context.Context) (context.Context, context.CancelFunc) {
-	ctx, cancel := context.WithCancel(ctx)
-	go func(ctx context.Context, cancel context.CancelFunc) {
-		select {
-		case <-ctx.Done():
-		case <-d.stopCh:
-			cancel()
-		}
-	}(ctx, cancel)
-	return ctx, cancel
-}
-
 func (d *client) exportContext(parent context.Context) (context.Context, context.CancelFunc) {
 	var (
 		ctx    context.Context
