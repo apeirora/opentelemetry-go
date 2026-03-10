@@ -8,11 +8,21 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ## [Unreleased]
 
+<!-- Released section -->
+<!-- Don't change this section unless doing release -->
+
+## [1.42.0/0.64.0/0.18.0/0.0.16] 2026-03-06
+
 ### Added
 
 - Add `go.opentelemetry.io/otel/semconv/v1.40.0` package.
   The package contains semantic conventions from the `v1.40.0` version of the OpenTelemetry Semantic Conventions.
   See the [migration documentation](./semconv/v1.40.0/MIGRATION.md) for information on how to upgrade from `go.opentelemetry.io/otel/semconv/v1.39.0`. (#7985)
+- Add `Err` and `SetErr` on `Record` in `go.opentelemetry.io/otel/log` to attach an error and set record exception attributes in `go.opentelemetry.io/otel/log/sdk`. (#7924)
+
+### Changed
+
+- `TracerProvider.ForceFlush` in `go.opentelemetry.io/otel/sdk/trace` joins errors together and continues iteration through SpanProcessors as opposed to returning the first encountered error without attempting exports on subsequent SpanProcessors. (#7856)
 
 ### Fixed
 
@@ -23,9 +33,6 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 ### Removed
 
 - Drop support for [Go 1.24]. (#7984)
-
-<!-- Released section -->
-<!-- Don't change this section unless doing release -->
 
 ## [1.41.0/0.63.0/0.17.0/0.0.15] 2026-03-02
 
@@ -3569,7 +3576,8 @@ It contains api and sdk for trace and meter.
 - CircleCI build CI manifest files.
 - CODEOWNERS file to track owners of this project.
 
-[Unreleased]: https://github.com/open-telemetry/opentelemetry-go/compare/v1.41.0...HEAD
+[Unreleased]: https://github.com/open-telemetry/opentelemetry-go/compare/v1.42.0...HEAD
+[1.42.0/0.64.0/0.18.0/0.0.16]: https://github.com/open-telemetry/opentelemetry-go/releases/tag/v1.42.0
 [1.41.0/0.63.0/0.17.0/0.0.15]: https://github.com/open-telemetry/opentelemetry-go/releases/tag/v1.41.0
 [1.40.0/0.62.0/0.16.0]: https://github.com/open-telemetry/opentelemetry-go/releases/tag/v1.40.0
 [1.39.0/0.61.0/0.15.0/0.0.14]: https://github.com/open-telemetry/opentelemetry-go/releases/tag/v1.39.0
