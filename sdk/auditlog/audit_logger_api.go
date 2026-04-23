@@ -1,0 +1,495 @@
+// Copyright The OpenTelemetry Authors
+// SPDX-License-Identifier: Apache-2.0
+
+package log
+
+import (
+	"context"
+	"sync"
+	"sync/atomic"
+	"time"
+
+	"go.opentelemetry.io/otel/log"
+)
+
+type AuditEnabledParameters struct {
+	EventName string
+}
+
+type AuditRecordProcessor interface {
+	Enabled(ctx context.Context, param AuditEnabledParameters) bool
+	OnEmit(ctx context.Context, record *Record) error
+	Shutdown(ctx context.Context) error
+	ForceFlush(ctx context.Context) error
+}
+
+type AuditLogger interface {
+	Emit(ctx context.Context, record AuditRecord) error
+	EmitWithResult(ctx context.Context, record AuditRecord) AuditEmitResult
+	Enabled(ctx context.Context, eventName string) bool
+}
+
+type AuditEmitResult struct {
+	RecordID      string
+	StatusCode    int
+	Status        string
+	Hash          string
+	SinkTimestamp time.Time
+	Reason        string
+	RetryAfter    time.Duration
+	QueuedAt      time.Time
+}
+
+type auditLogger struct {
+	provider *AuditLoggerProvider
+}
+
+const (
+	auditAttrActor         = "audit.actor"
+	auditAttrActorType     = "audit.actor_type"
+	auditAttrAction        = "audit.action"
+	auditAttrResource      = "audit.resource"
+	auditAttrOutcome       = "audit.outcome"
+	auditAttrSourceIP      = "audit.source_ip"
+	auditAttrRecordID      = "audit.record_id"
+	auditAttrHash          = "audit.hash"
+	auditAttrSignature     = "audit.signature"
+	auditAttrHMAC          = "audit.hmac"
+	auditAttrSchemaVersion = "audit.schema_version"
+	auditAttrHashAlgorithm = "audit.hash_algorithm"
+	auditAttrKeyID         = "audit.key_id"
+	auditAttrSequenceNo    = "audit.sequence_no"
+	auditAttrPrevHash      = "audit.prev_hash"
+)
+
+func (l *auditLogger) Emit(ctx context.Context, record AuditRecord) error {
+	result := l.EmitWithResult(ctx, record)
+	if result.StatusCode >= 400 {
+		return newAuditStatusError(AuditErrorUnavailable, result.Reason, true, nil)
+	}
+	return nil
+}
+
+func (l *auditLogger) EmitWithResult(ctx context.Context, record AuditRecord) AuditEmitResult {
+	result := AuditEmitResult{
+		RecordID: record.RecordID,
+		Hash:     record.Hash,
+	}
+	if l.provider.stopped.Load() {
+		err := newAuditStatusError(AuditErrorUnavailable, "provider_shutdown", true, nil)
+		result.StatusCode, result.Status, result.Reason = mapAuditError(err)
+		result.RetryAfter = time.Second
+		return result
+	}
+	if err := l.provider.evaluatePolicies(ctx, record); err != nil {
+		result.StatusCode, result.Status, result.Reason = mapAuditError(err)
+		if statusErr, ok := err.(*AuditStatusError); ok && statusErr.Code == AuditErrorTooManyRequests {
+			result.RetryAfter = time.Second
+		}
+		return result
+	}
+	if err := validateRequiredAuditRecord(record); err != nil {
+		result.StatusCode, result.Status, result.Reason = mapAuditError(err)
+		return result
+	}
+	if err := verifyAuditIntegrity(
+		record,
+		l.provider.hmacVerificationKey,
+		l.provider.signatureVerifier,
+		l.provider.hashAlgorithm,
+	); err != nil {
+		result.StatusCode, result.Status, result.Reason = mapAuditError(err)
+		return result
+	}
+	otelRecord := record.Record.Clone()
+	if otelRecord.ObservedTimestamp().IsZero() {
+		otelRecord.SetObservedTimestamp(time.Now())
+	}
+	otelRecord.SetEventName(record.EventName)
+	otelRecord.AddAttributes(
+		log.KeyValue{Key: auditAttrActor, Value: record.Actor},
+		log.String(auditAttrActorType, record.ActorType),
+		log.String(auditAttrAction, record.Action),
+		log.KeyValue{Key: auditAttrResource, Value: record.Resource},
+		log.String(auditAttrOutcome, record.Outcome),
+		log.String(auditAttrRecordID, record.RecordID),
+		log.String(auditAttrHash, record.Hash),
+		log.String(auditAttrSchemaVersion, record.SchemaVersion),
+	)
+	if record.SourceIP != "" {
+		otelRecord.AddAttributes(log.String(auditAttrSourceIP, record.SourceIP))
+	}
+	if record.Signature != "" {
+		otelRecord.AddAttributes(log.String(auditAttrSignature, record.Signature))
+	}
+	if record.HMAC != "" {
+		otelRecord.AddAttributes(log.String(auditAttrHMAC, record.HMAC))
+	}
+	if record.HashAlgorithm != "" {
+		otelRecord.AddAttributes(log.String(auditAttrHashAlgorithm, record.HashAlgorithm))
+	}
+	if record.KeyID != "" {
+		otelRecord.AddAttributes(log.String(auditAttrKeyID, record.KeyID))
+	}
+	if record.SequenceNo > 0 {
+		otelRecord.AddAttributes(log.Int64(auditAttrSequenceNo, record.SequenceNo))
+	}
+	if record.PrevHash != "" {
+		otelRecord.AddAttributes(log.String(auditAttrPrevHash, record.PrevHash))
+	}
+	queuedAt := time.Now().UTC()
+	for _, p := range l.provider.processors {
+		if err := p.OnEmit(ctx, &otelRecord); err != nil {
+			mappedErr := newAuditStatusError(AuditErrorUnavailable, "processor_emit_failed", true, err)
+			result.StatusCode, result.Status, result.Reason = mapAuditError(mappedErr)
+			result.RetryAfter = time.Second
+			return result
+		}
+	}
+	if l.provider.shouldWaitOnExport() {
+		for _, p := range l.provider.processors {
+			if err := p.ForceFlush(ctx); err != nil {
+				mappedErr := newAuditStatusError(AuditErrorUnavailable, "processor_flush_failed", true, err)
+				result.StatusCode, result.Status, result.Reason = mapAuditError(mappedErr)
+				result.RetryAfter = time.Second
+				return result
+			}
+		}
+		result.StatusCode = 200
+		result.Status = "delivered"
+		result.SinkTimestamp = time.Now().UTC()
+	} else {
+		result.StatusCode = 202
+		result.Status = "queued"
+		result.QueuedAt = queuedAt
+	}
+	return result
+}
+
+func validateRequiredAuditRecord(record AuditRecord) error {
+	if record.Timestamp().IsZero() {
+		return newAuditStatusError(AuditErrorInvalidRequest, "audit timestamp is required", false, nil)
+	}
+	if record.EventName == "" {
+		return newAuditStatusError(AuditErrorInvalidRequest, "audit event_name is required", false, nil)
+	}
+	if record.Actor.Kind() == log.KindEmpty {
+		return newAuditStatusError(AuditErrorInvalidRequest, "audit actor is required", false, nil)
+	}
+	if record.ActorType == "" {
+		return newAuditStatusError(AuditErrorInvalidRequest, "audit actor_type is required", false, nil)
+	}
+	if record.Action == "" {
+		return newAuditStatusError(AuditErrorInvalidRequest, "audit action is required", false, nil)
+	}
+	if record.Resource.Kind() == log.KindEmpty {
+		return newAuditStatusError(AuditErrorInvalidRequest, "audit resource is required", false, nil)
+	}
+	if record.Outcome == "" {
+		return newAuditStatusError(AuditErrorInvalidRequest, "audit outcome is required", false, nil)
+	}
+	if record.Body().Kind() == log.KindEmpty {
+		return newAuditStatusError(AuditErrorInvalidRequest, "audit body is required", false, nil)
+	}
+	if record.AttributesLen() == 0 {
+		return newAuditStatusError(AuditErrorInvalidRequest, "audit attributes are required", false, nil)
+	}
+	if record.RecordID == "" {
+		return newAuditStatusError(AuditErrorInvalidRequest, "audit record_id is required", false, nil)
+	}
+	if record.Hash == "" {
+		return newAuditStatusError(AuditErrorInvalidRequest, "audit hash is required", false, nil)
+	}
+	if record.Signature == "" && record.HMAC == "" {
+		return newAuditStatusError(AuditErrorInvalidRequest, "audit signature or hmac is required", false, nil)
+	}
+	if record.SchemaVersion == "" {
+		return newAuditStatusError(AuditErrorInvalidRequest, "audit schema_version is required", false, nil)
+	}
+	return nil
+}
+
+func (l *auditLogger) Enabled(ctx context.Context, eventName string) bool {
+	if l.provider.stopped.Load() {
+		return false
+	}
+	if len(l.provider.processors) == 0 {
+		return false
+	}
+	param := AuditEnabledParameters{EventName: eventName}
+	for _, p := range l.provider.processors {
+		if p.Enabled(ctx, param) {
+			return true
+		}
+	}
+	return false
+}
+
+type AuditLoggerProvider struct {
+	processors           []AuditRecordProcessor
+	hmacVerificationKey  []byte
+	signatureVerifier    AuditSignatureVerifier
+	hashAlgorithm        string
+	authorizer           AuditAuthorizer
+	maxBodyBytes         int
+	maxAttributeCount    int
+	maxRequestsPerSecond int
+	rateMu               sync.Mutex
+	rateWindowStart      time.Time
+	rateCount            int
+	loggersMu            sync.Mutex
+	loggers              map[auditLoggerKey]*auditLogger
+	stopped              atomic.Bool
+}
+
+type auditLoggerKey struct {
+	name      string
+	version   string
+	schemaURL string
+}
+
+type auditProviderConfig struct {
+	processors          []AuditRecordProcessor
+	hmacVerificationKey []byte
+	signatureVerifier   AuditSignatureVerifier
+	hashAlgorithm       string
+	authorizer          AuditAuthorizer
+	maxBodyBytes        int
+	maxAttributeCount   int
+	maxRequestsPerSecond int
+}
+
+type AuditLoggerProviderOption interface {
+	apply(auditProviderConfig) auditProviderConfig
+}
+
+type auditLoggerProviderOptionFunc func(auditProviderConfig) auditProviderConfig
+
+func (f auditLoggerProviderOptionFunc) apply(c auditProviderConfig) auditProviderConfig {
+	return f(c)
+}
+
+func WithAuditRecordProcessor(processor AuditRecordProcessor) AuditLoggerProviderOption {
+	return auditLoggerProviderOptionFunc(func(cfg auditProviderConfig) auditProviderConfig {
+		cfg.processors = append(cfg.processors, processor)
+		return cfg
+	})
+}
+
+func WithAuditHMACVerificationKey(key []byte) AuditLoggerProviderOption {
+	return auditLoggerProviderOptionFunc(func(cfg auditProviderConfig) auditProviderConfig {
+		if len(key) == 0 {
+			cfg.hmacVerificationKey = nil
+			return cfg
+		}
+		k := make([]byte, len(key))
+		copy(k, key)
+		cfg.hmacVerificationKey = k
+		return cfg
+	})
+}
+
+type AuditSignatureVerifier func(record AuditRecord, canonicalPayload []byte) error
+type AuditAuthorizer func(ctx context.Context, record AuditRecord) error
+
+func WithAuditSignatureVerifier(verifier AuditSignatureVerifier) AuditLoggerProviderOption {
+	return auditLoggerProviderOptionFunc(func(cfg auditProviderConfig) auditProviderConfig {
+		cfg.signatureVerifier = verifier
+		return cfg
+	})
+}
+
+func WithAuditHashAlgorithm(algorithm string) AuditLoggerProviderOption {
+	return auditLoggerProviderOptionFunc(func(cfg auditProviderConfig) auditProviderConfig {
+		cfg.hashAlgorithm = algorithm
+		return cfg
+	})
+}
+
+func WithAuditAuthorizer(authorizer AuditAuthorizer) AuditLoggerProviderOption {
+	return auditLoggerProviderOptionFunc(func(cfg auditProviderConfig) auditProviderConfig {
+		cfg.authorizer = authorizer
+		return cfg
+	})
+}
+
+func WithAuditMaxBodyBytes(limit int) AuditLoggerProviderOption {
+	return auditLoggerProviderOptionFunc(func(cfg auditProviderConfig) auditProviderConfig {
+		cfg.maxBodyBytes = limit
+		return cfg
+	})
+}
+
+func WithAuditMaxAttributeCount(limit int) AuditLoggerProviderOption {
+	return auditLoggerProviderOptionFunc(func(cfg auditProviderConfig) auditProviderConfig {
+		cfg.maxAttributeCount = limit
+		return cfg
+	})
+}
+
+func WithAuditMaxRequestsPerSecond(limit int) AuditLoggerProviderOption {
+	return auditLoggerProviderOptionFunc(func(cfg auditProviderConfig) auditProviderConfig {
+		cfg.maxRequestsPerSecond = limit
+		return cfg
+	})
+}
+
+func NewAuditLoggerProvider(opts ...AuditLoggerProviderOption) *AuditLoggerProvider {
+	cfg := auditProviderConfig{}
+	for _, opt := range opts {
+		cfg = opt.apply(cfg)
+	}
+	return &AuditLoggerProvider{
+		processors:          cfg.processors,
+		hmacVerificationKey: cfg.hmacVerificationKey,
+		signatureVerifier:   cfg.signatureVerifier,
+		hashAlgorithm:       cfg.hashAlgorithm,
+		authorizer:          cfg.authorizer,
+		maxBodyBytes:        cfg.maxBodyBytes,
+		maxAttributeCount:   cfg.maxAttributeCount,
+		maxRequestsPerSecond: cfg.maxRequestsPerSecond,
+		loggers:             make(map[auditLoggerKey]*auditLogger),
+	}
+}
+
+type AuditLoggerOption interface {
+	apply(auditLoggerConfig) auditLoggerConfig
+}
+
+type auditLoggerConfig struct {
+	version   string
+	schemaURL string
+}
+
+type auditLoggerOptionFunc func(auditLoggerConfig) auditLoggerConfig
+
+func (f auditLoggerOptionFunc) apply(c auditLoggerConfig) auditLoggerConfig {
+	return f(c)
+}
+
+func WithAuditLoggerVersion(version string) AuditLoggerOption {
+	return auditLoggerOptionFunc(func(c auditLoggerConfig) auditLoggerConfig {
+		c.version = version
+		return c
+	})
+}
+
+func WithAuditLoggerSchemaURL(schemaURL string) AuditLoggerOption {
+	return auditLoggerOptionFunc(func(c auditLoggerConfig) auditLoggerConfig {
+		c.schemaURL = schemaURL
+		return c
+	})
+}
+
+func (p *AuditLoggerProvider) Logger(name string, opts ...AuditLoggerOption) AuditLogger {
+	if p.stopped.Load() {
+		return &auditLogger{provider: p}
+	}
+	cfg := auditLoggerConfig{}
+	for _, opt := range opts {
+		cfg = opt.apply(cfg)
+	}
+	key := auditLoggerKey{name: name, version: cfg.version, schemaURL: cfg.schemaURL}
+	p.loggersMu.Lock()
+	defer p.loggersMu.Unlock()
+	if l, ok := p.loggers[key]; ok {
+		return l
+	}
+	l := &auditLogger{provider: p}
+	p.loggers[key] = l
+	return l
+}
+
+func (p *AuditLoggerProvider) Shutdown(ctx context.Context) error {
+	if p.stopped.Swap(true) {
+		return nil
+	}
+	var firstErr error
+	for _, proc := range p.processors {
+		if err := proc.Shutdown(ctx); err != nil && firstErr == nil {
+			firstErr = err
+		}
+	}
+	return firstErr
+}
+
+func (p *AuditLoggerProvider) ForceFlush(ctx context.Context) error {
+	if p.stopped.Load() {
+		return nil
+	}
+	var firstErr error
+	for _, proc := range p.processors {
+		if err := proc.ForceFlush(ctx); err != nil && firstErr == nil {
+			firstErr = err
+		}
+	}
+	return firstErr
+}
+
+func (p *AuditLoggerProvider) shouldWaitOnExport() bool {
+	for _, processor := range p.processors {
+		if ap, ok := processor.(*AuditLogProcessor); ok && ap.config.WaitOnExport {
+			return true
+		}
+	}
+	return false
+}
+
+func (p *AuditLoggerProvider) evaluatePolicies(ctx context.Context, record AuditRecord) error {
+	if p.authorizer != nil {
+		if err := p.authorizer(ctx, record); err != nil {
+			if _, ok := err.(*AuditStatusError); ok {
+				return err
+			}
+			return newAuditStatusError(AuditErrorForbidden, "authorization_failed", false, err)
+		}
+	}
+	if p.maxBodyBytes > 0 && len(record.Body().String()) > p.maxBodyBytes {
+		return newAuditStatusError(AuditErrorPayloadTooLarge, "audit body exceeds size limit", false, nil)
+	}
+	if p.maxAttributeCount > 0 && record.AttributesLen() > p.maxAttributeCount {
+		return newAuditStatusError(AuditErrorPayloadTooLarge, "audit attributes exceed count limit", false, nil)
+	}
+	if p.maxRequestsPerSecond > 0 {
+		p.rateMu.Lock()
+		now := time.Now()
+		if p.rateWindowStart.IsZero() || now.Sub(p.rateWindowStart) >= time.Second {
+			p.rateWindowStart = now
+			p.rateCount = 0
+		}
+		p.rateCount++
+		allowed := p.rateCount <= p.maxRequestsPerSecond
+		p.rateMu.Unlock()
+		if !allowed {
+			return newAuditStatusError(AuditErrorTooManyRequests, "audit rate limit exceeded", true, nil)
+		}
+	}
+	return nil
+}
+
+func NewAuditLoggerProviderWithProcessor(processor *AuditLogProcessor) *AuditLoggerProvider {
+	if processor == nil {
+		return NewAuditLoggerProvider()
+	}
+	return NewAuditLoggerProvider(WithAuditRecordProcessor(processor))
+}
+
+type AuditRecord struct {
+	Record
+	EventName string
+	Actor     log.Value
+	ActorType string
+	Action    string
+	Resource  log.Value
+	Outcome   string
+	SourceIP  string
+	RecordID  string
+	Hash      string
+	Signature string
+	HMAC      string
+	SchemaVersion string
+	HashAlgorithm string
+	KeyID string
+	SequenceNo int64
+	PrevHash string
+}

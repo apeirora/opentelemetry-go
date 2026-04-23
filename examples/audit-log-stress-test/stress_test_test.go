@@ -7,7 +7,7 @@ import (
 	"os"
 	"testing"
 
-	"go.opentelemetry.io/otel/sdk/log"
+	"go.opentelemetry.io/otel/sdk/auditlog"
 )
 
 func TestStressTest(t *testing.T) {

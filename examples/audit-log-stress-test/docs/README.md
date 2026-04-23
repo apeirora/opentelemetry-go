@@ -13,5 +13,5 @@ Documentation for storage extensions and the audit log stress test.
 ## 🔗 Related
 
 - [Stress Test README](../README.md) - Main stress test documentation
-- [SDK Audit Log API](../../../sdk/log/AUDIT_LOG_README.md) - API documentation
+- [SDK Audit Log API](../../../sdk/auditlog/AUDIT_LOG_README.md) - API documentation
 

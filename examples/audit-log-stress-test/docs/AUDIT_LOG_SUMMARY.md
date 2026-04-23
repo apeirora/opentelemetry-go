@@ -14,7 +14,7 @@ package main
 import (
     "context"
     "time"
-    "go.opentelemetry.io/otel/sdk/log"
+    "go.opentelemetry.io/otel/sdk/auditlog"
 )
 
 func main() {
@@ -328,9 +328,9 @@ defer func() {
 
 ## 📚 Additional Resources
 
-- **README**: `sdk/log/AUDIT_LOG_README.md` - Detailed documentation
-- **Tests**: `sdk/log/audit_processor_test.go` - Comprehensive test suite
-- **Examples**: `sdk/log/example_usage.go` - Usage examples
+- **README**: `sdk/auditlog/AUDIT_LOG_README.md` - Detailed documentation
+- **Tests**: `sdk/auditlog/audit_processor_test.go` - Comprehensive test suite
+- **Examples**: `sdk/auditlog/example_usage.go` - Usage examples
 - **Comparison**: `AUDIT_LOG_COMPARISON.md` - Go vs Java SDK comparison
 
 ## 🎯 Key Takeaways

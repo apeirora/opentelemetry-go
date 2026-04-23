@@ -144,6 +144,10 @@ type AuditLogProcessor struct {
 	extension StorageExtension
 }
 
+func (p *AuditLogProcessor) Enabled(ctx context.Context, param AuditEnabledParameters) bool {
+	return !p.shutdown.Load()
+}
+
 func NewAuditLogProcessor(config AuditLogProcessorConfig) (*AuditLogProcessor, error) {
 	if config.Exporter == nil {
 		return nil, fmt.Errorf("exporter cannot be nil")

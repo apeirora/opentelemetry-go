@@ -10,7 +10,7 @@ import (
 	"fmt"
 	"time"
 
-	sdklog "go.opentelemetry.io/otel/sdk/log"
+	sdklog "go.opentelemetry.io/otel/sdk/auditlog"
 )
 
 func main() {

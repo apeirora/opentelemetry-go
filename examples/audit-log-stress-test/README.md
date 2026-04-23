@@ -312,5 +312,5 @@ After running the stress test:
 - **[User Guide](docs/USER_GUIDE_SIMPLE_STORAGE.md)** - Complete guide
 - **[Storage Examples](docs/STORAGE_EXAMPLES.md)** - CLI examples for this stress test
 - **[Audit Log Summary](docs/AUDIT_LOG_SUMMARY.md)** - Audit log feature overview
-- **[SDK API Docs](../../sdk/log/AUDIT_LOG_README.md)** - Audit processor API documentation
+- **[SDK API Docs](../../sdk/auditlog/AUDIT_LOG_README.md)** - Audit processor API documentation
 

@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"go.opentelemetry.io/otel/log"
+	sdklog "go.opentelemetry.io/otel/sdk/auditlog"
 )
 
 type FailingExporter struct {
@@ -22,7 +23,7 @@ type FailingExporter struct {
 	exportedCount int
 }
 
-func (e *FailingExporter) Export(ctx context.Context, records []Record) error {
+func (e *FailingExporter) Export(ctx context.Context, records []sdklog.Record) error {
 	e.exportAttempt++
 	if e.shouldFail {
 		fmt.Printf("❌ Export attempt #%d FAILED (simulated failure)\n", e.exportAttempt)
@@ -52,15 +53,15 @@ func TestAuditLogPersistence(t *testing.T) {
 	storePath := filepath.Join(tempDir, "test_audit.log")
 	fmt.Printf("📁 Storage path: %s\n\n", storePath)
 
-	store, err := NewAuditLogFileStore(storePath)
+	store, err := sdklog.NewAuditLogFileStore(storePath)
 	if err != nil {
 		t.Fatalf("Failed to create store: %v", err)
 	}
 
 	exporter := &FailingExporter{shouldFail: true}
-	exceptionHandler := &ExampleExceptionHandler{}
+	exceptionHandler := &sdklog.ExampleExceptionHandler{}
 
-	processor, err := NewAuditLogProcessorBuilder(exporter, store).
+	processor, err := sdklog.NewAuditLogProcessorBuilder(exporter, store).
 		SetScheduleDelay(100 * time.Millisecond).
 		SetMaxExportBatchSize(10).
 		SetExporterTimeout(5 * time.Second).
@@ -165,7 +166,7 @@ func TestAuditLogPersistence(t *testing.T) {
 	fmt.Println("✓ Audit log system provides durability guarantees")
 }
 
-func readStorageFile(t *testing.T, path string) []Record {
+func readStorageFile(t *testing.T, path string) []sdklog.Record {
 	t.Helper()
 
 	file, err := os.Open(path)
@@ -177,10 +178,10 @@ func readStorageFile(t *testing.T, path string) []Record {
 	}
 	defer file.Close()
 
-	var records []Record
+	var records []sdklog.Record
 	decoder := json.NewDecoder(file)
 	for {
-		var record Record
+		var record sdklog.Record
 		if err := decoder.Decode(&record); err != nil {
 			break
 		}
@@ -200,14 +201,14 @@ func TestAuditLogRecoveryAfterCrash(t *testing.T) {
 
 	fmt.Println("📝 Step 1: Create first processor and emit records")
 
-	store1, err := NewAuditLogFileStore(storePath)
+	store1, err := sdklog.NewAuditLogFileStore(storePath)
 	if err != nil {
 		t.Fatalf("Failed to create store: %v", err)
 	}
 
 	exporter1 := &FailingExporter{shouldFail: true}
 
-	processor1, err := NewAuditLogProcessorBuilder(exporter1, store1).
+	processor1, err := sdklog.NewAuditLogProcessorBuilder(exporter1, store1).
 		SetScheduleDelay(1 * time.Second).
 		SetMaxExportBatchSize(10).
 		Build()
@@ -238,14 +239,14 @@ func TestAuditLogRecoveryAfterCrash(t *testing.T) {
 
 	fmt.Println("\n🔄 Step 3: Restart with new processor (simulating app restart)")
 
-	store2, err := NewAuditLogFileStore(storePath)
+	store2, err := sdklog.NewAuditLogFileStore(storePath)
 	if err != nil {
 		t.Fatalf("Failed to create store: %v", err)
 	}
 
 	exporter2 := &FailingExporter{shouldFail: false}
 
-	processor2, err := NewAuditLogProcessorBuilder(exporter2, store2).
+	processor2, err := sdklog.NewAuditLogProcessorBuilder(exporter2, store2).
 		SetScheduleDelay(100 * time.Millisecond).
 		SetMaxExportBatchSize(10).
 		Build()
