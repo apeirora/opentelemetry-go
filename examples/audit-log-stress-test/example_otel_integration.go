@@ -14,7 +14,7 @@ import (
 	"time"
 
 	"go.opentelemetry.io/otel/log"
-	sdklog "go.opentelemetry.io/otel/sdk/log"
+	sdklog "go.opentelemetry.io/otel/sdk/auditlog"
 )
 
 func RunOTELIntegrationExample() {
@@ -303,7 +303,7 @@ func (e *OTLPExporter) buildOTLPPayload(records []sdklog.Record) map[string]inte
 				"scopeLogs": []map[string]interface{}{
 					{
 						"scope": map[string]interface{}{
-							"name":    "go.opentelemetry.io/otel/sdk/log",
+							"name":    "go.opentelemetry.io/otel/sdk/auditlog",
 							"version": "0.14.0",
 						},
 						"logRecords": logRecords,

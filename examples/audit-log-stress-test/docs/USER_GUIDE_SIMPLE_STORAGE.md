@@ -71,7 +71,7 @@ import (
     "time"
     
     "go.opentelemetry.io/otel/log"
-    sdklog "go.opentelemetry.io/otel/sdk/log"
+    sdklog "go.opentelemetry.io/otel/sdk/auditlog"
 )
 
 func main() {
@@ -328,7 +328,7 @@ Run the example:
 docker run -d -p 6379:6379 redis:latest
 
 # Run examples
-cd sdk/log
+cd sdk/auditlog
 go run example_simple_storage.go
 ```
 
@@ -393,6 +393,6 @@ Example 4: SQL Storage
 
 - [Quick Start](QUICK_START_SIMPLE_API.md) - 30-second quickstart
 - [Storage Examples](STORAGE_EXAMPLES.md) - Stress test CLI examples
-- [example_simple_storage.go](../../../sdk/log/example_simple_storage.go) - Runnable code examples
+- [example_simple_storage.go](../../../sdk/auditlog/example_simple_storage.go) - Runnable code examples
 - [START_HERE.md](START_HERE.md) - Documentation overview
 

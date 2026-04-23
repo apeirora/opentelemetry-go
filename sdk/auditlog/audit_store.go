@@ -22,7 +22,7 @@ type AuditLogStore interface {
 type AuditLogFileStore struct {
 	logFilePath string
 
-	loggedRecords map[string]bool
+	loggedRecords map[string]string
 
 	mutex sync.RWMutex
 
@@ -39,7 +39,7 @@ const (
 
 func NewAuditLogFileStore(path string) (*AuditLogFileStore, error) {
 	store := &AuditLogFileStore{
-		loggedRecords:      make(map[string]bool),
+		loggedRecords:      make(map[string]string),
 		defaultLogFileName: DefaultLogFileName,
 		logFileExtension:   DefaultLogFileExtension,
 	}
@@ -89,25 +89,6 @@ func (s *AuditLogFileStore) verifyFileAccess() error {
 	return nil
 }
 
-func (s *AuditLogFileStore) generateRecordId(record *Record) string {
-	if record == nil {
-		return ""
-	}
-
-	bodyStr := ""
-	if record.Body().Kind() != 0 {
-		bodyStr = record.Body().String()
-	}
-
-	id := fmt.Sprintf("%d_%s_%s",
-		record.Timestamp().UnixNano(),
-		bodyStr,
-		record.Severity().String(),
-	)
-
-	return fmt.Sprintf("%d", len(id))
-}
-
 func (s *AuditLogFileStore) loadExistingRecordIds(ctx context.Context) error {
 	file, err := os.Open(s.logFilePath)
 	if err != nil {
@@ -135,9 +116,9 @@ func (s *AuditLogFileStore) loadExistingRecordIds(ctx context.Context) error {
 			continue
 		}
 
-		recordId := s.generateRecordId(&record)
-		if recordId != "" {
-			s.loggedRecords[recordId] = true
+		recordId, err := getAuditRecordID(&record)
+		if err == nil {
+			s.loggedRecords[recordId] = getAuditRecordHash(&record)
 		}
 	}
 
@@ -149,12 +130,19 @@ func (s *AuditLogFileStore) Save(ctx context.Context, record *Record) error {
 		return fmt.Errorf("record cannot be nil")
 	}
 
-	recordId := s.generateRecordId(record)
+	recordId, err := getAuditRecordID(record)
+	if err != nil {
+		return err
+	}
 
 	s.mutex.Lock()
 	defer s.mutex.Unlock()
 
-	if s.loggedRecords[recordId] {
+	recordHash := getAuditRecordHash(record)
+	if existingHash, exists := s.loggedRecords[recordId]; exists {
+		if existingHash != "" && recordHash != "" && existingHash != recordHash {
+			return newAuditStatusError(AuditErrorConflict, "duplicate record_id with different hash", false, nil)
+		}
 		return nil
 	}
 
@@ -173,7 +161,7 @@ func (s *AuditLogFileStore) Save(ctx context.Context, record *Record) error {
 		return fmt.Errorf("failed to write newline: %w", err)
 	}
 
-	s.loggedRecords[recordId] = true
+	s.loggedRecords[recordId] = recordHash
 
 	return nil
 }
@@ -188,8 +176,8 @@ func (s *AuditLogFileStore) RemoveAll(ctx context.Context, records []Record) err
 
 	recordIdsToRemove := make(map[string]bool)
 	for _, record := range records {
-		recordId := s.generateRecordId(&record)
-		if recordId != "" {
+		recordId, err := getAuditRecordID(&record)
+		if err == nil {
 			recordIdsToRemove[recordId] = true
 		}
 	}
@@ -217,8 +205,11 @@ func (s *AuditLogFileStore) RemoveAll(ctx context.Context, records []Record) err
 			continue
 		}
 
-		recordId := s.generateRecordId(&record)
-		if recordId != "" && !recordIdsToRemove[recordId] {
+		recordId, err := getAuditRecordID(&record)
+		if err != nil {
+			continue
+		}
+		if !recordIdsToRemove[recordId] {
 			remainingRecords = append(remainingRecords, record)
 		} else {
 			delete(s.loggedRecords, recordId)
@@ -321,22 +312,18 @@ func (s *AuditLogInMemoryStore) RemoveAll(ctx context.Context, records []Record)
 
 	recordsToRemove := make(map[string]bool)
 	for _, record := range records {
-		bodyStr := ""
-		if record.Body().Kind() != 0 {
-			bodyStr = record.Body().String()
+		recordCopy := record
+		id, err := getAuditRecordID(&recordCopy)
+		if err == nil {
+			recordsToRemove[id] = true
 		}
-		id := fmt.Sprintf("%d_%s", record.Timestamp().UnixNano(), bodyStr)
-		recordsToRemove[id] = true
 	}
 
 	var filteredRecords []Record
 	for _, record := range s.records {
-		bodyStr := ""
-		if record.Body().Kind() != 0 {
-			bodyStr = record.Body().String()
-		}
-		id := fmt.Sprintf("%d_%s", record.Timestamp().UnixNano(), bodyStr)
-		if !recordsToRemove[id] {
+		recordCopy := record
+		id, err := getAuditRecordID(&recordCopy)
+		if err != nil || !recordsToRemove[id] {
 			filteredRecords = append(filteredRecords, record)
 		}
 	}

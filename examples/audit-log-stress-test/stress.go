@@ -10,7 +10,7 @@ import (
 	"time"
 
 	"go.opentelemetry.io/otel/log"
-	sdklog "go.opentelemetry.io/otel/sdk/log"
+	sdklog "go.opentelemetry.io/otel/sdk/auditlog"
 )
 
 type StorageType string

@@ -141,7 +141,7 @@ import (
     "time"
     
     "go.opentelemetry.io/otel/log"
-    "go.opentelemetry.io/otel/sdk/log"
+    "go.opentelemetry.io/otel/sdk/auditlog"
 )
 
 func main() {

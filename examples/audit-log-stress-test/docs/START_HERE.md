@@ -64,7 +64,7 @@ See [STORAGE_EXAMPLES.md](STORAGE_EXAMPLES.md) for more CLI examples.
 
 - **[AUDIT_LOG_SUMMARY.md](AUDIT_LOG_SUMMARY.md)** - Audit log system overview
 - **[README.md](README.md)** - Documentation directory overview
-- **[SDK Audit Log API](../../../sdk/log/AUDIT_LOG_README.md)** - API documentation
+- **[SDK Audit Log API](../../../sdk/auditlog/AUDIT_LOG_README.md)** - API documentation
 
 ---
 

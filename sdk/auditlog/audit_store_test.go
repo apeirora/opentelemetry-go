@@ -328,16 +328,14 @@ func TestAuditLogInMemoryStore(t *testing.T) {
 
 // Helper function to create test records
 func createTestRecord(message string, severity log.Severity) Record {
-	record := Record{
-		timestamp:         time.Now(),
-		observedTimestamp: time.Now(),
-		severity:          severity,
-		severityText:      severity.String(),
-		body:              log.StringValue(message),
-		traceID:           trace.TraceID{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16},
-		spanID:            trace.SpanID{1, 2, 3, 4, 5, 6, 7, 8},
-		traceFlags:        trace.FlagsSampled,
-	}
-
+	record := Record{}
+	record.SetTimestamp(time.Now())
+	record.SetObservedTimestamp(time.Now())
+	record.SetSeverity(severity)
+	record.SetSeverityText(severity.String())
+	record.SetBody(log.StringValue(message))
+	record.SetTraceID(trace.TraceID{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16})
+	record.SetSpanID(trace.SpanID{1, 2, 3, 4, 5, 6, 7, 8})
+	record.SetTraceFlags(trace.FlagsSampled)
 	return record
 }

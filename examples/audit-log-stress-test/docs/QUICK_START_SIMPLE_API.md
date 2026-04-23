@@ -46,7 +46,7 @@ package main
 
 import (
     "context"
-    sdklog "go.opentelemetry.io/otel/sdk/log"
+    sdklog "go.opentelemetry.io/otel/sdk/auditlog"
 )
 
 func main() {
@@ -105,7 +105,7 @@ func main() {
 ## Run Example
 
 ```bash
-cd sdk/log
+cd sdk/auditlog
 go run example_simple_storage.go
 ```
 
