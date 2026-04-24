@@ -33,6 +33,7 @@ func NewAuditLogProcessorBuilder(exporter Exporter, store AuditLogStore) *AuditL
 			ExporterTimeout:    30 * time.Second,
 			RetryPolicy:        GetDefaultRetryPolicy(),
 			WaitOnExport:       false,
+			DeliveryMode:       AuditDeliveryModeAsyncStoreRetry,
 		},
 	}
 }
@@ -51,6 +52,7 @@ func NewAuditLogProcessorWithStorage(exporter Exporter) *AuditLogProcessorBuilde
 			ExporterTimeout:    30 * time.Second,
 			RetryPolicy:        GetDefaultRetryPolicy(),
 			WaitOnExport:       false,
+			DeliveryMode:       AuditDeliveryModeAsyncStoreRetry,
 		},
 	}
 }
@@ -106,10 +108,18 @@ func (b *AuditLogProcessorBuilder) SetWaitOnExport(wait bool) *AuditLogProcessor
 	return b
 }
 
+func (b *AuditLogProcessorBuilder) SetDeliveryMode(mode AuditDeliveryMode) *AuditLogProcessorBuilder {
+	if mode != AuditDeliveryModeAsyncStoreRetry && mode != AuditDeliveryModeSyncDirect {
+		panic("delivery mode must be async_store_retry or sync_direct")
+	}
+	b.config.DeliveryMode = mode
+	return b
+}
+
 func (b *AuditLogProcessorBuilder) Build() (*AuditLogProcessor, error) {
 	ctx := context.Background()
 
-	if b.config.AuditLogStore == nil && b.storageConfig != nil {
+	if b.config.DeliveryMode == AuditDeliveryModeAsyncStoreRetry && b.config.AuditLogStore == nil && b.storageConfig != nil {
 		extension, err := b.createStorageExtension()
 		if err != nil {
 			return nil, fmt.Errorf("failed to create storage extension: %w", err)
@@ -169,7 +179,7 @@ func (b *AuditLogProcessorBuilder) ValidateConfig() error {
 	if b.config.Exporter == nil {
 		return fmt.Errorf("exporter is required")
 	}
-	if b.config.AuditLogStore == nil {
+	if b.config.DeliveryMode == AuditDeliveryModeAsyncStoreRetry && b.config.AuditLogStore == nil {
 		return fmt.Errorf("audit log store is required")
 	}
 	if b.config.ExceptionHandler == nil {

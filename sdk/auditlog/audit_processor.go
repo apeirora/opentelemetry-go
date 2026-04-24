@@ -65,7 +65,15 @@ type AuditLogProcessorConfig struct {
 	ExporterTimeout    time.Duration
 	RetryPolicy        RetryPolicy
 	WaitOnExport       bool
+	DeliveryMode       AuditDeliveryMode
 }
+
+type AuditDeliveryMode string
+
+const (
+	AuditDeliveryModeAsyncStoreRetry AuditDeliveryMode = "async_store_retry"
+	AuditDeliveryModeSyncDirect      AuditDeliveryMode = "sync_direct"
+)
 
 func DefaultAuditLogProcessorConfig(exporter Exporter, store AuditLogStore) AuditLogProcessorConfig {
 	return AuditLogProcessorConfig{
@@ -77,6 +85,7 @@ func DefaultAuditLogProcessorConfig(exporter Exporter, store AuditLogStore) Audi
 		ExporterTimeout:    30 * time.Second,
 		RetryPolicy:        GetDefaultRetryPolicy(),
 		WaitOnExport:       false,
+		DeliveryMode:       AuditDeliveryModeAsyncStoreRetry,
 	}
 }
 
@@ -152,7 +161,10 @@ func NewAuditLogProcessor(config AuditLogProcessorConfig) (*AuditLogProcessor, e
 	if config.Exporter == nil {
 		return nil, fmt.Errorf("exporter cannot be nil")
 	}
-	if config.AuditLogStore == nil {
+	if config.DeliveryMode == "" {
+		config.DeliveryMode = AuditDeliveryModeAsyncStoreRetry
+	}
+	if config.DeliveryMode == AuditDeliveryModeAsyncStoreRetry && config.AuditLogStore == nil {
 		return nil, fmt.Errorf("audit log store cannot be nil")
 	}
 
@@ -164,11 +176,12 @@ func NewAuditLogProcessor(config AuditLogProcessorConfig) (*AuditLogProcessor, e
 
 	heap.Init(processor.queue)
 
-	if err := processor.loadExistingRecords(); err != nil {
-		return nil, fmt.Errorf("failed to load existing records: %w", err)
+	if config.DeliveryMode == AuditDeliveryModeAsyncStoreRetry {
+		if err := processor.loadExistingRecords(); err != nil {
+			return nil, fmt.Errorf("failed to load existing records: %w", err)
+		}
+		processor.startBackgroundProcessing()
 	}
-
-	processor.startBackgroundProcessing()
 
 	return processor, nil
 }
@@ -226,6 +239,26 @@ func (p *AuditLogProcessor) OnEmit(ctx context.Context, record *Record) error {
 		}
 		p.config.ExceptionHandler.Handle(exception)
 		return exception
+	}
+
+	if p.config.DeliveryMode == AuditDeliveryModeSyncDirect {
+		exportCtx := ctx
+		if p.config.ExporterTimeout > 0 {
+			var cancel context.CancelFunc
+			exportCtx, cancel = context.WithTimeout(ctx, p.config.ExporterTimeout)
+			defer cancel()
+		}
+		if err := p.config.Exporter.Export(exportCtx, []Record{*record}); err != nil {
+			exception := &AuditException{
+				Message:    "Failed to export record directly",
+				Cause:      err,
+				Context:    ctx,
+				LogRecords: []Record{*record},
+			}
+			p.config.ExceptionHandler.Handle(exception)
+			return exception
+		}
+		return nil
 	}
 
 	if err := p.config.AuditLogStore.Save(ctx, record); err != nil {
@@ -348,6 +381,9 @@ func (p *AuditLogProcessor) handleExportFailure(records []Record, cause error) {
 
 func (p *AuditLogProcessor) ForceFlush(ctx context.Context) error {
 	if p.shutdown.Load() {
+		return nil
+	}
+	if p.config.DeliveryMode == AuditDeliveryModeSyncDirect {
 		return nil
 	}
 

@@ -131,6 +131,7 @@ func TestAuditLogProcessor(t *testing.T) {
 			ExporterTimeout:    time.Second,
 			RetryPolicy:        GetDefaultRetryPolicy(),
 			WaitOnExport:       false,
+			DeliveryMode:       AuditDeliveryModeAsyncStoreRetry,
 		}
 
 		processor, err := NewAuditLogProcessor(config)
@@ -187,6 +188,7 @@ func TestAuditLogProcessor(t *testing.T) {
 			ExporterTimeout:    time.Second,
 			RetryPolicy:        GetDefaultRetryPolicy(),
 			WaitOnExport:       false,
+			DeliveryMode:       AuditDeliveryModeAsyncStoreRetry,
 		}
 
 		processor, err := NewAuditLogProcessor(config)
@@ -260,6 +262,7 @@ func TestAuditLogProcessor(t *testing.T) {
 			ExporterTimeout:    time.Second,
 			RetryPolicy:        GetDefaultRetryPolicy(),
 			WaitOnExport:       false,
+			DeliveryMode:       AuditDeliveryModeAsyncStoreRetry,
 		}
 
 		processor, err := NewAuditLogProcessor(config)
@@ -316,6 +319,7 @@ func TestAuditLogProcessor(t *testing.T) {
 				BackoffMultiplier: 2.0,
 			},
 			WaitOnExport: false,
+			DeliveryMode: AuditDeliveryModeAsyncStoreRetry,
 		}
 
 		processor, err := NewAuditLogProcessor(config)
@@ -356,6 +360,7 @@ func TestAuditLogProcessor(t *testing.T) {
 			ExporterTimeout:    time.Second,
 			RetryPolicy:        GetDefaultRetryPolicy(),
 			WaitOnExport:       false,
+			DeliveryMode:       AuditDeliveryModeAsyncStoreRetry,
 		}
 
 		processor, err := NewAuditLogProcessor(config)
@@ -408,6 +413,7 @@ func TestAuditLogProcessor(t *testing.T) {
 			ExporterTimeout:    time.Second,
 			RetryPolicy:        GetDefaultRetryPolicy(),
 			WaitOnExport:       false,
+			DeliveryMode:       AuditDeliveryModeAsyncStoreRetry,
 		}
 
 		processor, err := NewAuditLogProcessor(config)
@@ -440,6 +446,36 @@ func TestAuditLogProcessor(t *testing.T) {
 			t.Error("Expected record to be exported during force flush")
 		}
 	})
+
+	t.Run("Sync Direct Delivery Without Store", func(t *testing.T) {
+		exporter := NewMockExporter()
+		exceptionHandler := NewMockExceptionHandler()
+		config := AuditLogProcessorConfig{
+			Exporter:           exporter,
+			ExceptionHandler:   exceptionHandler,
+			ScheduleDelay:      100 * time.Millisecond,
+			MaxExportBatchSize: 10,
+			ExporterTimeout:    time.Second,
+			RetryPolicy:        GetDefaultRetryPolicy(),
+			WaitOnExport:       true,
+			DeliveryMode:       AuditDeliveryModeSyncDirect,
+		}
+		processor, err := NewAuditLogProcessor(config)
+		if err != nil {
+			t.Fatalf("Failed to create processor: %v", err)
+		}
+		defer processor.Shutdown(context.Background())
+		record := createTestRecord("sync-direct", log.SeverityInfo)
+		if err := processor.OnEmit(context.Background(), &record); err != nil {
+			t.Fatalf("Failed to emit sync-direct record: %v", err)
+		}
+		if exporter.GetExportCount() != 1 {
+			t.Fatalf("Expected direct export count 1, got %d", exporter.GetExportCount())
+		}
+		if processor.GetQueueSize() != 0 {
+			t.Fatalf("Expected queue size 0 in sync mode, got %d", processor.GetQueueSize())
+		}
+	})
 }
 
 func TestAuditLogProcessorBuilder(t *testing.T) {
@@ -459,6 +495,9 @@ func TestAuditLogProcessorBuilder(t *testing.T) {
 		if config.ExceptionHandler == nil {
 			t.Error("Expected default exception handler to be set")
 		}
+		if config.DeliveryMode != AuditDeliveryModeAsyncStoreRetry {
+			t.Error("Expected default delivery mode to be async_store_retry")
+		}
 	})
 
 	t.Run("Builder Configuration", func(t *testing.T) {
@@ -471,7 +510,8 @@ func TestAuditLogProcessorBuilder(t *testing.T) {
 			SetScheduleDelay(500 * time.Millisecond).
 			SetMaxExportBatchSize(100).
 			SetExporterTimeout(60 * time.Second).
-			SetWaitOnExport(true)
+			SetWaitOnExport(true).
+			SetDeliveryMode(AuditDeliveryModeSyncDirect)
 
 		config := builder.GetConfig()
 
@@ -489,6 +529,9 @@ func TestAuditLogProcessorBuilder(t *testing.T) {
 		}
 		if !config.WaitOnExport {
 			t.Error("Expected wait on export to be set")
+		}
+		if config.DeliveryMode != AuditDeliveryModeSyncDirect {
+			t.Error("Expected delivery mode to be sync_direct")
 		}
 	})
 
