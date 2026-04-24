@@ -84,6 +84,7 @@ Available builder setters:
 - `SetExporterTimeout`
 - `SetRetryPolicy`
 - `SetWaitOnExport`
+- `SetDeliveryMode`
 
 `BuildOrPanic`, `GetConfig`, and `ValidateConfig` are also available.
 
@@ -138,6 +139,25 @@ if err != nil {
 ```
 
 `adapter` satisfies `AuditLogStore` and can be used in `NewAuditLogProcessorBuilder`.
+
+## Delivery Mode
+
+`AuditLogProcessorConfig.DeliveryMode` controls how records are delivered:
+
+- `AuditDeliveryModeAsyncStoreRetry` (default): save to store first, queue, and export in background with retries.
+- `AuditDeliveryModeSyncDirect`: send directly to exporter on `OnEmit` without queue/store persistence.
+
+Example:
+
+```go
+processor, err := NewAuditLogProcessorWithStorage(exporter).
+	SetDeliveryMode(AuditDeliveryModeAsyncStoreRetry).
+	Build()
+
+syncProcessor, err := NewAuditLogProcessorBuilder(exporter, NewAuditLogInMemoryStore()).
+	SetDeliveryMode(AuditDeliveryModeSyncDirect).
+	Build()
+```
 
 ## Default Processor Configuration
 
