@@ -1,3 +1,233 @@
+# Audit Log SDK Package
+
+`go.opentelemetry.io/otel/sdk/auditlog` provides audit-focused log processing on top of `sdk/log`.
+
+It includes:
+
+- an `AuditLogProcessor` with severity-priority queueing, periodic export, and retry
+- pluggable `AuditLogStore` implementations
+- a storage-extension adapter for memory/file/Redis/SQL backends
+- an `AuditLoggerProvider`/`AuditLogger` API with policy checks and integrity verification
+
+## Package Layout
+
+- `sdk/auditlog`: public package surface (package name `log`)
+- `sdk/auditlog/store`: file and in-memory `AuditLogStore` implementations
+- `sdk/auditlog/storage`: storage extension and backend clients
+- `sdk/auditlog/identity`: record identity helpers (`record_id`, hash)
+- `sdk/auditlog/status`: audit status/error mapping
+
+## Core Types
+
+### `AuditLogStore`
+
+`AuditLogStore` is the persistence contract used by `AuditLogProcessor`:
+
+```go
+type AuditLogStore interface {
+	Save(ctx context.Context, record *sdklog.Record) error
+	RemoveAll(ctx context.Context, records []sdklog.Record) error
+	GetAll(ctx context.Context) ([]sdklog.Record, error)
+}
+```
+
+### `AuditLogProcessor`
+
+`AuditLogProcessor`:
+
+- stores records before export
+- loads persisted records on startup
+- orders queued records by severity priority (`Fatal` highest, `Trace` lowest)
+- exports in batches on a background ticker
+- retries failed exports using configured backoff
+- supports `ForceFlush` and `Shutdown`
+
+Configuration is represented by `AuditLogProcessorConfig`.
+
+### `AuditLoggerProvider` and `AuditLogger`
+
+`AuditLoggerProvider` builds and manages `AuditLogger` instances.
+`AuditLogger` accepts `AuditRecord` and can return a detailed `AuditEmitResult` via `EmitWithResult`.
+
+Provider options support:
+
+- processor registration (`WithAuditRecordProcessor`)
+- integrity configuration (`WithAuditHMACVerificationKey`, `WithAuditSignatureVerifier`, `WithAuditHashAlgorithm`)
+- policy enforcement (`WithAuditAuthorizer`, `WithAuditMaxBodyBytes`, `WithAuditMaxAttributeCount`, `WithAuditMaxRequestsPerSecond`)
+
+`AuditLogger` validates required fields, verifies hash/signature/HMAC, applies policy checks, emits via registered processors, and reports status details.
+
+## Building an `AuditLogProcessor`
+
+Use `NewAuditLogProcessorBuilder(exporter, store)` when you already have a store:
+
+```go
+builder := NewAuditLogProcessorBuilder(exporter, store).
+	SetScheduleDelay(1 * time.Second).
+	SetMaxExportBatchSize(512).
+	SetExporterTimeout(30 * time.Second).
+	SetRetryPolicy(RetryPolicy{
+		InitialBackoff:    time.Second,
+		MaxBackoff:        time.Minute,
+		BackoffMultiplier: 2.0,
+	}).
+	SetWaitOnExport(false)
+
+processor, err := builder.Build()
+```
+
+Available builder setters:
+
+- `SetExceptionHandler`
+- `SetScheduleDelay`
+- `SetMaxExportBatchSize`
+- `SetExporterTimeout`
+- `SetRetryPolicy`
+- `SetWaitOnExport`
+
+`BuildOrPanic`, `GetConfig`, and `ValidateConfig` are also available.
+
+## Storage Options
+
+### 1) Direct stores
+
+- `NewAuditLogFileStore(path)` (JSON records persisted to file)
+- `NewAuditLogInMemoryStore()` (in-memory, useful for tests)
+
+### 2) Builder-managed storage extension
+
+Use `NewAuditLogProcessorWithStorage(exporter)` and choose backend:
+
+- `WithMemoryStorage()`
+- `WithFileStorage(directory)`
+- `WithRedisStorage(...)`
+- `WithSQLStorage(...)`
+
+Example:
+
+```go
+processor, err := NewAuditLogProcessorWithStorage(exporter).
+	WithRedisStorage(
+		WithRedisEndpoint("localhost:6379"),
+		WithRedisKeyPrefix("otel_audit_"),
+		WithRedisKeyExpiration(24*time.Hour),
+	).
+	Build()
+```
+
+### 3) Manual storage extension + adapter
+
+If you need direct extension control:
+
+```go
+ext, err := NewStorageExtension(WithMemoryStorage())
+if err != nil {
+	return err
+}
+if err := ext.Start(ctx); err != nil {
+	return err
+}
+client, err := ext.GetClient(ctx, "audit_processor")
+if err != nil {
+	return err
+}
+adapter, err := NewAuditLogStorageExtensionAdapter(client)
+if err != nil {
+	return err
+}
+```
+
+`adapter` satisfies `AuditLogStore` and can be used in `NewAuditLogProcessorBuilder`.
+
+## Default Processor Configuration
+
+`DefaultAuditLogProcessorConfig(exporter, store)` sets:
+
+- `ScheduleDelay`: `1s`
+- `MaxExportBatchSize`: `512`
+- `ExporterTimeout`: `30s`
+- `RetryPolicy.InitialBackoff`: `1s`
+- `RetryPolicy.MaxBackoff`: `1m`
+- `RetryPolicy.BackoffMultiplier`: `2.0`
+- `WaitOnExport`: `false`
+- `ExceptionHandler`: `DefaultAuditExceptionHandler`
+
+## Audit Record Requirements
+
+`AuditLogger` validates that `AuditRecord` includes:
+
+- timestamp
+- event name
+- actor and actor type
+- action
+- resource
+- outcome
+- body
+- at least one attribute
+- `record_id`
+- `hash`
+- `signature` or `hmac`
+- `schema_version`
+
+Integrity verification supports hash and optional HMAC/signature validation.
+
+## Basic End-to-End Example
+
+```go
+store, err := NewAuditLogFileStore("./audit.log")
+if err != nil {
+	return err
+}
+
+processor, err := NewAuditLogProcessorBuilder(exporter, store).Build()
+if err != nil {
+	return err
+}
+defer processor.Shutdown(context.Background())
+
+provider := NewAuditLoggerProvider(
+	WithAuditRecordProcessor(processor),
+)
+defer provider.Shutdown(context.Background())
+
+logger := provider.Logger("security-audit")
+
+record := AuditRecord{
+	Record: Record{},
+	EventName: "user.login",
+	Actor: log.StringValue("user-123"),
+	ActorType: "user",
+	Action: "login",
+	Resource: log.StringValue("session"),
+	Outcome: "success",
+	RecordID: "evt-001",
+	Hash: "<canonical-hash>",
+	Signature: "<signature>",
+	SchemaVersion: "1.0",
+}
+record.SetTimestamp(time.Now())
+record.SetObservedTimestamp(time.Now())
+record.SetBody(log.StringValue(`{"result":"ok"}`))
+record.AddAttributes(log.String("tenant.id", "acme"))
+
+result := logger.EmitWithResult(context.Background(), record)
+_ = result
+```
+
+## Error Model
+
+Audit errors are represented with status-aligned codes in `audit_errors.go` (`AuditErrorInvalidRequest`, `AuditErrorForbidden`, `AuditErrorConflict`, `AuditErrorTooManyRequests`, `AuditErrorUnavailable`, and others).
+
+Processor-side failures are surfaced through `AuditExceptionHandler`.
+
+## Related Examples
+
+See:
+
+- `sdk/auditlog/example_usage.go`
+- `sdk/auditlog/example_simple_storage.go`
+- `sdk/auditlog/example_storage_extension_usage.go`
+
 # Audit Log Storage for OpenTelemetry Go SDK
 
 This package provides audit log storage capabilities for the OpenTelemetry Go SDK, similar to the Java implementation. It includes persistent storage, priority-based processing, and retry mechanisms for reliable audit logging.

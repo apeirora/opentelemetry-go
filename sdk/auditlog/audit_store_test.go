@@ -24,12 +24,12 @@ func TestAuditLogFileStore(t *testing.T) {
 			t.Fatalf("Failed to create file store: %v", err)
 		}
 
-		if store.logFilePath == "" {
+		if store.LogFilePath() == "" {
 			t.Error("Expected log file path to be set")
 		}
 
 		// Verify file was created
-		if _, err := os.Stat(store.logFilePath); os.IsNotExist(err) {
+		if _, err := os.Stat(store.LogFilePath()); os.IsNotExist(err) {
 			t.Error("Expected log file to be created")
 		}
 	})
@@ -139,8 +139,8 @@ func TestAuditLogFileStore(t *testing.T) {
 		}
 
 		expectedPath := filepath.Join(tempDir2, DefaultLogFileName)
-		if store.logFilePath != expectedPath {
-			t.Errorf("Expected path %s, got %s", expectedPath, store.logFilePath)
+		if store.LogFilePath() != expectedPath {
+			t.Errorf("Expected path %s, got %s", expectedPath, store.LogFilePath())
 		}
 
 		// Test with file path
@@ -150,8 +150,8 @@ func TestAuditLogFileStore(t *testing.T) {
 			t.Fatalf("Failed to create file store with file: %v", err)
 		}
 
-		if store2.logFilePath != tempFile {
-			t.Errorf("Expected path %s, got %s", tempFile, store2.logFilePath)
+		if store2.LogFilePath() != tempFile {
+			t.Errorf("Expected path %s, got %s", tempFile, store2.LogFilePath())
 		}
 	})
 
