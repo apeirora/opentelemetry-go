@@ -7,6 +7,7 @@ import (
 	"context"
 	"fmt"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -18,6 +19,8 @@ type MockExporter struct {
 	exportedRecords [][]Record
 	exportError     error
 	exportDelay     time.Duration
+	shutdownError   error
+	shutdownCount   int
 	mutex           sync.Mutex
 }
 
@@ -44,7 +47,10 @@ func (m *MockExporter) Export(ctx context.Context, records []Record) error {
 }
 
 func (m *MockExporter) Shutdown(ctx context.Context) error {
-	return nil
+	m.mutex.Lock()
+	defer m.mutex.Unlock()
+	m.shutdownCount++
+	return m.shutdownError
 }
 
 func (m *MockExporter) ForceFlush(ctx context.Context) error {
@@ -80,6 +86,18 @@ func (m *MockExporter) GetExportCount() int {
 	m.mutex.Lock()
 	defer m.mutex.Unlock()
 	return len(m.exportedRecords)
+}
+
+func (m *MockExporter) SetShutdownError(err error) {
+	m.mutex.Lock()
+	defer m.mutex.Unlock()
+	m.shutdownError = err
+}
+
+func (m *MockExporter) GetShutdownCount() int {
+	m.mutex.Lock()
+	defer m.mutex.Unlock()
+	return m.shutdownCount
 }
 
 // MockExceptionHandler is a mock implementation of AuditExceptionHandler for testing
@@ -476,6 +494,103 @@ func TestAuditLogProcessor(t *testing.T) {
 			t.Fatalf("Expected queue size 0 in sync mode, got %d", processor.GetQueueSize())
 		}
 	})
+
+	t.Run("Shutdown Calls ExporterShutdown", func(t *testing.T) {
+		exporter := NewMockExporter()
+		store := NewAuditLogInMemoryStore()
+		config := AuditLogProcessorConfig{
+			Exporter:           exporter,
+			AuditLogStore:      store,
+			ExceptionHandler:   NewMockExceptionHandler(),
+			ScheduleDelay:      100 * time.Millisecond,
+			MaxExportBatchSize: 10,
+			ExporterTimeout:    time.Second,
+			RetryPolicy:        GetDefaultRetryPolicy(),
+			WaitOnExport:       false,
+			DeliveryMode:       AuditDeliveryModeAsyncStoreRetry,
+		}
+		processor, err := NewAuditLogProcessor(config)
+		if err != nil {
+			t.Fatalf("Failed to create processor: %v", err)
+		}
+		if err := processor.Shutdown(context.Background()); err != nil {
+			t.Fatalf("Shutdown failed: %v", err)
+		}
+		if exporter.GetShutdownCount() != 1 {
+			t.Fatalf("Expected exporter Shutdown to be called once, got %d", exporter.GetShutdownCount())
+		}
+	})
+
+	t.Run("Shutdown Returns ExporterShutdownError", func(t *testing.T) {
+		exporter := NewMockExporter()
+		exporter.SetShutdownError(fmt.Errorf("exporter shutdown failed"))
+		store := NewAuditLogInMemoryStore()
+		config := AuditLogProcessorConfig{
+			Exporter:           exporter,
+			AuditLogStore:      store,
+			ExceptionHandler:   NewMockExceptionHandler(),
+			ScheduleDelay:      100 * time.Millisecond,
+			MaxExportBatchSize: 10,
+			ExporterTimeout:    time.Second,
+			RetryPolicy:        GetDefaultRetryPolicy(),
+			WaitOnExport:       false,
+			DeliveryMode:       AuditDeliveryModeAsyncStoreRetry,
+		}
+		processor, err := NewAuditLogProcessor(config)
+		if err != nil {
+			t.Fatalf("Failed to create processor: %v", err)
+		}
+		if err := processor.Shutdown(context.Background()); err == nil {
+			t.Fatalf("Expected exporter shutdown error")
+		}
+		if exporter.GetShutdownCount() != 1 {
+			t.Fatalf("Expected exporter Shutdown to be called once, got %d", exporter.GetShutdownCount())
+		}
+	})
+}
+
+func TestAuditLogProcessorFileStoreCompactionAfterFlush(t *testing.T) {
+	storeDir := t.TempDir()
+	fileStore, err := NewAuditLogFileStore(storeDir)
+	if err != nil {
+		t.Fatalf("file store: %v", err)
+	}
+	exporter := NewMockExporter()
+	cfg := AuditLogProcessorConfig{
+		Exporter:           exporter,
+		AuditLogStore:      fileStore,
+		ExceptionHandler:   NewMockExceptionHandler(),
+		ScheduleDelay:      10 * time.Second,
+		MaxExportBatchSize: 32,
+		ExporterTimeout:    5 * time.Second,
+		RetryPolicy:        GetDefaultRetryPolicy(),
+		WaitOnExport:       false,
+		DeliveryMode:       AuditDeliveryModeAsyncStoreRetry,
+	}
+	processor, err := NewAuditLogProcessor(cfg)
+	if err != nil {
+		t.Fatalf("processor: %v", err)
+	}
+	defer processor.Shutdown(context.Background())
+
+	ctx := context.Background()
+	const n = 20
+	for i := 0; i < n; i++ {
+		r := createTestRecord(fmt.Sprintf("compact-%d", i), log.SeverityInfo)
+		if err := processor.OnEmit(ctx, &r); err != nil {
+			t.Fatalf("OnEmit %d: %v", i, err)
+		}
+	}
+	if err := processor.ForceFlush(ctx); err != nil {
+		t.Fatalf("ForceFlush: %v", err)
+	}
+	remaining, err := fileStore.GetAll(ctx)
+	if err != nil {
+		t.Fatalf("GetAll: %v", err)
+	}
+	if len(remaining) != 0 {
+		t.Fatalf("expected file store empty after successful export+flush, got %d records", len(remaining))
+	}
 }
 
 func TestAuditLogProcessorBuilder(t *testing.T) {
@@ -634,5 +749,384 @@ func TestGetSeverityPriority(t *testing.T) {
 		if priority != test.expected {
 			t.Errorf("Expected priority %d for severity %v, got %d", test.expected, test.severity, priority)
 		}
+	}
+}
+
+type failThenSucceedExporter struct {
+	mu                sync.Mutex
+	failuresRemaining int
+	exported          []Record
+}
+
+type gatedExporter struct {
+	mu           sync.Mutex
+	allowSuccess atomic.Bool
+	exported     []Record
+}
+
+func (e *gatedExporter) Export(ctx context.Context, records []Record) error {
+	if !e.allowSuccess.Load() {
+		return fmt.Errorf("export blocked")
+	}
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	copied := make([]Record, len(records))
+	copy(copied, records)
+	e.exported = append(e.exported, copied...)
+	return nil
+}
+
+func (e *gatedExporter) Shutdown(ctx context.Context) error { return nil }
+func (e *gatedExporter) ForceFlush(ctx context.Context) error { return nil }
+
+func (e *gatedExporter) ExportedCount() int {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return len(e.exported)
+}
+
+func newFailThenSucceedExporter(failures int) *failThenSucceedExporter {
+	return &failThenSucceedExporter{failuresRemaining: failures, exported: make([]Record, 0)}
+}
+
+func (e *failThenSucceedExporter) Export(ctx context.Context, records []Record) error {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if e.failuresRemaining > 0 {
+		e.failuresRemaining--
+		return fmt.Errorf("transient export failure")
+	}
+	copied := make([]Record, len(records))
+	copy(copied, records)
+	e.exported = append(e.exported, copied...)
+	return nil
+}
+
+func (e *failThenSucceedExporter) Shutdown(ctx context.Context) error { return nil }
+func (e *failThenSucceedExporter) ForceFlush(ctx context.Context) error { return nil }
+
+func (e *failThenSucceedExporter) ExportedCount() int {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return len(e.exported)
+}
+
+func TestAuditLogProcessorNoLossRetryRecovery(t *testing.T) {
+	exporter := newFailThenSucceedExporter(3)
+	store := NewAuditLogInMemoryStore()
+	cfg := AuditLogProcessorConfig{
+		Exporter:           exporter,
+		AuditLogStore:      store,
+		ExceptionHandler:   NewMockExceptionHandler(),
+		ScheduleDelay:      5 * time.Millisecond,
+		MaxExportBatchSize: 1,
+		ExporterTimeout:    time.Second,
+		RetryPolicy: RetryPolicy{
+			InitialBackoff:    1 * time.Millisecond,
+			MaxBackoff:        5 * time.Millisecond,
+			BackoffMultiplier: 1.2,
+		},
+		DeliveryMode: AuditDeliveryModeAsyncStoreRetry,
+	}
+	processor, err := NewAuditLogProcessor(cfg)
+	if err != nil {
+		t.Fatalf("failed to create processor: %v", err)
+	}
+	defer processor.Shutdown(context.Background())
+
+	const recordsToEmit = 25
+	for i := 0; i < recordsToEmit; i++ {
+		r := createTestRecord(fmt.Sprintf("durable-%d", i), log.SeverityInfo)
+		if err := processor.OnEmit(context.Background(), &r); err != nil {
+			t.Fatalf("emit failed at %d: %v", i, err)
+		}
+	}
+
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		if exporter.ExportedCount() == recordsToEmit && store.GetRecordCount() == 0 {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	if got := exporter.ExportedCount(); got != recordsToEmit {
+		t.Fatalf("expected %d exported records, got %d", recordsToEmit, got)
+	}
+	if got := store.GetRecordCount(); got != 0 {
+		t.Fatalf("expected empty store after flush, got %d", got)
+	}
+}
+
+func TestAuditLogProcessorNoLossForAcceptedRecordsDuringConcurrentShutdown(t *testing.T) {
+	exporter := NewMockExporter()
+	store := NewAuditLogInMemoryStore()
+	cfg := AuditLogProcessorConfig{
+		Exporter:           exporter,
+		AuditLogStore:      store,
+		ExceptionHandler:   NewMockExceptionHandler(),
+		ScheduleDelay:      10 * time.Millisecond,
+		MaxExportBatchSize: 16,
+		ExporterTimeout:    time.Second,
+		RetryPolicy: RetryPolicy{
+			InitialBackoff:    1 * time.Millisecond,
+			MaxBackoff:        10 * time.Millisecond,
+			BackoffMultiplier: 1.5,
+		},
+		DeliveryMode: AuditDeliveryModeAsyncStoreRetry,
+	}
+	processor, err := NewAuditLogProcessor(cfg)
+	if err != nil {
+		t.Fatalf("failed to create processor: %v", err)
+	}
+
+	const emitters = 8
+	const perEmitter = 40
+
+	var accepted atomic.Int64
+	var wg sync.WaitGroup
+	wg.Add(emitters)
+	for g := 0; g < emitters; g++ {
+		go func(id int) {
+			defer wg.Done()
+			for i := 0; i < perEmitter; i++ {
+				r := createTestRecord(fmt.Sprintf("concurrent-%d-%d", id, i), log.SeverityInfo)
+				if err := processor.OnEmit(context.Background(), &r); err == nil {
+					accepted.Add(1)
+				}
+			}
+		}(g)
+	}
+
+	time.Sleep(15 * time.Millisecond)
+	if err := processor.Shutdown(context.Background()); err != nil {
+		t.Fatalf("shutdown failed: %v", err)
+	}
+	wg.Wait()
+
+	exported := 0
+	for _, batch := range exporter.GetExportedRecords() {
+		exported += len(batch)
+	}
+	if int64(exported) != accepted.Load() {
+		t.Fatalf("expected %d exported accepted records, got %d", accepted.Load(), exported)
+	}
+	if got := store.GetRecordCount(); got != 0 {
+		t.Fatalf("expected empty store after shutdown, got %d", got)
+	}
+}
+
+func TestAuditLogProcessorAsyncIgnoresCanceledEmitContext(t *testing.T) {
+	exporter := NewMockExporter()
+	store := NewAuditLogInMemoryStore()
+	cfg := AuditLogProcessorConfig{
+		Exporter:           exporter,
+		AuditLogStore:      store,
+		ExceptionHandler:   NewMockExceptionHandler(),
+		ScheduleDelay:      5 * time.Millisecond,
+		MaxExportBatchSize: 1,
+		ExporterTimeout:    time.Second,
+		RetryPolicy: RetryPolicy{
+			InitialBackoff:    1 * time.Millisecond,
+			MaxBackoff:        5 * time.Millisecond,
+			BackoffMultiplier: 2,
+		},
+		DeliveryMode: AuditDeliveryModeAsyncStoreRetry,
+	}
+	processor, err := NewAuditLogProcessor(cfg)
+	if err != nil {
+		t.Fatalf("failed to create processor: %v", err)
+	}
+	defer processor.Shutdown(context.Background())
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	rec := createTestRecord("cancelled-context-record", log.SeverityInfo)
+
+	if err := processor.OnEmit(ctx, &rec); err != nil {
+		t.Fatalf("OnEmit returned error for canceled context: %v", err)
+	}
+
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		exported := 0
+		for _, batch := range exporter.GetExportedRecords() {
+			exported += len(batch)
+		}
+		if exported == 1 {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	exported := 0
+	for _, batch := range exporter.GetExportedRecords() {
+		exported += len(batch)
+	}
+	t.Fatalf("expected 1 exported record, got %d", exported)
+}
+
+func TestAuditLogProcessorRestartReplaysFileStoreAfterRecovery(t *testing.T) {
+	exporter := &gatedExporter{}
+	storeDir := t.TempDir()
+	fileStore, err := NewAuditLogFileStore(storeDir)
+	if err != nil {
+		t.Fatalf("failed to create file store: %v", err)
+	}
+
+	firstCfg := AuditLogProcessorConfig{
+		Exporter:           exporter,
+		AuditLogStore:      fileStore,
+		ExceptionHandler:   NewMockExceptionHandler(),
+		ScheduleDelay:      5 * time.Millisecond,
+		MaxExportBatchSize: 2,
+		ExporterTimeout:    time.Second,
+		RetryPolicy: RetryPolicy{
+			InitialBackoff:    1 * time.Millisecond,
+			MaxBackoff:        5 * time.Millisecond,
+			BackoffMultiplier: 1.2,
+		},
+		DeliveryMode: AuditDeliveryModeAsyncStoreRetry,
+	}
+
+	firstProcessor, err := NewAuditLogProcessor(firstCfg)
+	if err != nil {
+		t.Fatalf("failed to create first processor: %v", err)
+	}
+
+	const recordsToEmit = 6
+	for i := 0; i < recordsToEmit; i++ {
+		r := createTestRecord(fmt.Sprintf("replay-%d", i), log.SeverityInfo)
+		if err := firstProcessor.OnEmit(context.Background(), &r); err != nil {
+			t.Fatalf("first processor emit failed at %d: %v", i, err)
+		}
+	}
+
+	time.Sleep(40 * time.Millisecond)
+	if err := firstProcessor.Shutdown(context.Background()); err == nil {
+		t.Fatalf("expected first shutdown to fail while exporter is blocked")
+	}
+
+	persistedAfterFailure, err := fileStore.GetAll(context.Background())
+	if err != nil {
+		t.Fatalf("failed to read persisted records: %v", err)
+	}
+	if len(persistedAfterFailure) == 0 {
+		t.Fatalf("expected persisted records after failed export")
+	}
+
+	exporter.allowSuccess.Store(true)
+
+	secondStore, err := NewAuditLogFileStore(storeDir)
+	if err != nil {
+		t.Fatalf("failed to reopen file store: %v", err)
+	}
+
+	secondCfg := firstCfg
+	secondCfg.AuditLogStore = secondStore
+
+	secondProcessor, err := NewAuditLogProcessor(secondCfg)
+	if err != nil {
+		t.Fatalf("failed to create second processor: %v", err)
+	}
+	defer secondProcessor.Shutdown(context.Background())
+
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		remaining, getErr := secondStore.GetAll(context.Background())
+		if getErr != nil {
+			t.Fatalf("failed to read replayed store: %v", getErr)
+		}
+		if len(remaining) == 0 && exporter.ExportedCount() >= recordsToEmit {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	remaining, err := secondStore.GetAll(context.Background())
+	if err != nil {
+		t.Fatalf("failed to read final store state: %v", err)
+	}
+	t.Fatalf("expected replay drain, remaining=%d exported=%d", len(remaining), exporter.ExportedCount())
+}
+
+func TestAuditLogProcessorShutdownIsIdempotent(t *testing.T) {
+	exporter := NewMockExporter()
+	store := NewAuditLogInMemoryStore()
+	cfg := AuditLogProcessorConfig{
+		Exporter:           exporter,
+		AuditLogStore:      store,
+		ExceptionHandler:   NewMockExceptionHandler(),
+		ScheduleDelay:      5 * time.Millisecond,
+		MaxExportBatchSize: 2,
+		ExporterTimeout:    time.Second,
+		RetryPolicy: RetryPolicy{
+			InitialBackoff:    1 * time.Millisecond,
+			MaxBackoff:        5 * time.Millisecond,
+			BackoffMultiplier: 1.5,
+		},
+		DeliveryMode: AuditDeliveryModeAsyncStoreRetry,
+	}
+	processor, err := NewAuditLogProcessor(cfg)
+	if err != nil {
+		t.Fatalf("failed to create processor: %v", err)
+	}
+
+	if err := processor.Shutdown(context.Background()); err != nil {
+		t.Fatalf("first shutdown failed: %v", err)
+	}
+	if err := processor.Shutdown(context.Background()); err != nil {
+		t.Fatalf("second shutdown failed: %v", err)
+	}
+	if got := exporter.GetShutdownCount(); got != 1 {
+		t.Fatalf("expected exporter shutdown once, got %d", got)
+	}
+}
+
+func TestAuditLogProcessorShutdownAfterFailedExportKeepsStoredRecords(t *testing.T) {
+	exporter := &gatedExporter{}
+	storeDir := t.TempDir()
+	store, err := NewAuditLogFileStore(storeDir)
+	if err != nil {
+		t.Fatalf("failed to create file store: %v", err)
+	}
+	cfg := AuditLogProcessorConfig{
+		Exporter:           exporter,
+		AuditLogStore:      store,
+		ExceptionHandler:   NewMockExceptionHandler(),
+		ScheduleDelay:      5 * time.Millisecond,
+		MaxExportBatchSize: 2,
+		ExporterTimeout:    time.Second,
+		RetryPolicy: RetryPolicy{
+			InitialBackoff:    1 * time.Millisecond,
+			MaxBackoff:        5 * time.Millisecond,
+			BackoffMultiplier: 1.2,
+		},
+		DeliveryMode: AuditDeliveryModeAsyncStoreRetry,
+	}
+	processor, err := NewAuditLogProcessor(cfg)
+	if err != nil {
+		t.Fatalf("failed to create processor: %v", err)
+	}
+
+	const recordsToEmit = 5
+	for i := 0; i < recordsToEmit; i++ {
+		r := createTestRecord(fmt.Sprintf("shutdown-failed-export-%d", i), log.SeverityInfo)
+		if err := processor.OnEmit(context.Background(), &r); err != nil {
+			t.Fatalf("emit failed at %d: %v", i, err)
+		}
+	}
+
+	time.Sleep(40 * time.Millisecond)
+	if err := processor.Shutdown(context.Background()); err == nil {
+		t.Fatalf("expected shutdown error when exports fail")
+	}
+
+	persisted, err := store.GetAll(context.Background())
+	if err != nil {
+		t.Fatalf("failed to load persisted records: %v", err)
+	}
+	if len(persisted) != recordsToEmit {
+		t.Fatalf("expected %d persisted records after failed shutdown flush, got %d", recordsToEmit, len(persisted))
 	}
 }
