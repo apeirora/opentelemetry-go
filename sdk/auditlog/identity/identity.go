@@ -25,12 +25,16 @@ func GetRecordID(record *sdklog.Record) (string, error) {
 		if string(kv.Key) != attrRecordID {
 			return true
 		}
+		var v string
 		if kv.Value.Kind() == log.KindString {
-			id = strings.TrimSpace(kv.Value.AsString())
+			v = strings.TrimSpace(kv.Value.AsString())
 		} else {
-			id = strings.TrimSpace(kv.Value.String())
+			v = strings.TrimSpace(kv.Value.String())
 		}
-		return false
+		if v != "" {
+			id = v
+		}
+		return true
 	})
 	if id != "" {
 		return id, nil

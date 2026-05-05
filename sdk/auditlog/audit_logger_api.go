@@ -5,6 +5,7 @@ package log
 
 import (
 	"context"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -62,6 +63,31 @@ const (
 	auditAttrPrevHash      = "audit.prev_hash"
 )
 
+func auditRecordIDAttrMatches(r Record, want string) bool {
+	want = strings.TrimSpace(want)
+	if want == "" {
+		return false
+	}
+	var match bool
+	r.WalkAttributes(func(kv log.KeyValue) bool {
+		if string(kv.Key) != auditAttrRecordID {
+			return true
+		}
+		var v string
+		if kv.Value.Kind() == log.KindString {
+			v = strings.TrimSpace(kv.Value.AsString())
+		} else {
+			v = strings.TrimSpace(kv.Value.String())
+		}
+		if v == want {
+			match = true
+			return false
+		}
+		return true
+	})
+	return match
+}
+
 func (l *auditLogger) Emit(ctx context.Context, record AuditRecord) error {
 	result := l.EmitWithResult(ctx, record)
 	if result.StatusCode >= 400 {
@@ -88,6 +114,18 @@ func (l *auditLogger) EmitWithResult(ctx context.Context, record AuditRecord) Au
 		}
 		return result
 	}
+	if len(l.provider.hmacVerificationKey) > 0 &&
+		record.Hash == "" && record.HMAC == "" && record.Signature == "" {
+		signed, err := signAuditRecordHMAC(record, l.provider.hmacVerificationKey, l.provider.hashAlgorithm)
+		if err != nil {
+			result.StatusCode, result.Status, result.Reason = mapAuditError(
+				newAuditStatusError(AuditErrorInvalidRequest, "audit hmac signing failed", false, err),
+			)
+			return result
+		}
+		record = signed
+		result.Hash = record.Hash
+	}
 	if err := validateRequiredAuditRecord(record); err != nil {
 		result.StatusCode, result.Status, result.Reason = mapAuditError(err)
 		return result
@@ -106,16 +144,19 @@ func (l *auditLogger) EmitWithResult(ctx context.Context, record AuditRecord) Au
 		otelRecord.SetObservedTimestamp(time.Now())
 	}
 	otelRecord.SetEventName(record.EventName)
-	otelRecord.AddAttributes(
+	auditAttrs := []log.KeyValue{
 		log.KeyValue{Key: auditAttrActor, Value: record.Actor},
 		log.String(auditAttrActorType, record.ActorType),
 		log.String(auditAttrAction, record.Action),
 		log.KeyValue{Key: auditAttrResource, Value: record.Resource},
 		log.String(auditAttrOutcome, record.Outcome),
-		log.String(auditAttrRecordID, record.RecordID),
 		log.String(auditAttrHash, record.Hash),
 		log.String(auditAttrSchemaVersion, record.SchemaVersion),
-	)
+	}
+	if !auditRecordIDAttrMatches(otelRecord, record.RecordID) {
+		auditAttrs = append(auditAttrs, log.String(auditAttrRecordID, record.RecordID))
+	}
+	otelRecord.AddAttributes(auditAttrs...)
 	if record.SourceIP != "" {
 		otelRecord.AddAttributes(log.String(auditAttrSourceIP, record.SourceIP))
 	}
@@ -276,6 +317,10 @@ func WithAuditRecordProcessor(processor AuditRecordProcessor) AuditLoggerProvide
 	})
 }
 
+// WithAuditHMACVerificationKey configures the shared secret used to verify HMAC tags on
+// incoming audit records. When the key is non-empty and a record omits Hash, HMAC, and
+// Signature, the provider computes hash and HMAC from the canonical audit payload
+// before validation and processing (in-process signing for trusted emitters).
 func WithAuditHMACVerificationKey(key []byte) AuditLoggerProviderOption {
 	return auditLoggerProviderOptionFunc(func(cfg auditProviderConfig) auditProviderConfig {
 		if len(key) == 0 {

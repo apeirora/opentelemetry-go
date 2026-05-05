@@ -10,6 +10,8 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ### Added
 
+- In `go.opentelemetry.io/otel/sdk/auditlog`, when `WithAuditHMACVerificationKey` is configured with a non-empty key and an audit record omits `Hash`, `HMAC`, and `Signature`, the provider computes hash and HMAC from the canonical audit payload before validation (trusted in-process emitters no longer need to pre-sign).
+- Add `WithAuditHMACVerificationKeyFromEnvironment`, `EnvAuditlogHMACKeyFile`, and `EnvAuditlogHMACKey` in `go.opentelemetry.io/otel/sdk/auditlog` to load the HMAC verification key from `OTEL_AUDITLOG_HMAC_KEY_FILE` (path) or `OTEL_AUDITLOG_HMAC_KEY` (raw string).
 - Add `ByteSlice` and `ByteSliceValue` functions for new `BYTESLICE` attribute type in `go.opentelemetry.io/otel/attribute`. (#7948)
 - Support `BYTESLICE` attributes in `go.opentelemetry.io/otel/trace`. (#8153)
 - Support `BYTESLICE` attributes in `go.opentelemetry.io/otel/exporters/otlp/otlptrace`. (#8153)
@@ -57,6 +59,10 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 - Fix stale status code reporting on self-observability metrics in `go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracehttp` and `go.opentelemetry.io/otel/exporters/otlp/otlplog/otlploghttp`. (#8226)
 - Fix a concurrent `Collect` data race and potential panic in `go.opentelemetry.io/otel/exporters/prometheus` when `WithResourceAsConstantLabels` option is used. (#8227)
 - Fix race condition in `FixedSizeReservoir` in `go.opentelemetry.io/otel/sdk/metric/exemplar` by reverting #7447. (#8249)
+- In `go.opentelemetry.io/otel/sdk/auditlog`, `AuditLogProcessor` retries removing exported records from the `AuditLogStore`, surfaces compaction failures via `AuditExceptionHandler`, and fails `ForceFlush`/`Shutdown` when removal still fails after retries (previously export was treated as successful even when `RemoveAll` failed, leaving durable stores unchanged).
+- In `go.opentelemetry.io/otel/sdk/auditlog/store`, `AuditLogFileStore` compaction falls back to truncating the log file and copying from a temp file when rename/replace fails (helps Windows when the log path is open elsewhere).
+- In `go.opentelemetry.io/otel/sdk/auditlog`, `identity.GetRecordID` uses the last non-empty `audit.record_id` when iterating attributes, and `EmitWithResult` skips adding `audit.record_id` when the cloned `Record` already contains the same id. Together this keeps file-store compaction aligned with exported records when callers pre-set `audit.record_id` on the embedded `Record` (as in the auditlog testapp).
+- In `go.opentelemetry.io/otel/sdk/auditlog/recordcodec`, `Deserialize` applies unlimited attribute count and value length limits while rebuilding the `sdk/log.Record`, matching logger-created records. Previously the zero-value limits treated `0` as "truncate strings to length zero", so persisted audit lines lost attribute payloads and durable store compaction could not match exported record ids.
 
 <!-- Released section -->
 <!-- Don't change this section unless doing release -->
