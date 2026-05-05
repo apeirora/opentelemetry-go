@@ -312,6 +312,87 @@ func (s *AuditLogFileStore) GetAll(ctx context.Context) ([]sdklog.Record, error)
 	return records, nil
 }
 
+func (s *AuditLogFileStore) WalkRecords(ctx context.Context, fn func(sdklog.Record) error) error {
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	default:
+	}
+	file, err := os.Open(s.logFilePath)
+	if err != nil {
+		return fmt.Errorf("failed to open log file: %w", err)
+	}
+	defer file.Close()
+	scanner := bufio.NewScanner(file)
+	scanner.Buffer(make([]byte, 64*1024), 10*1024*1024)
+	for scanner.Scan() {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		default:
+		}
+		var data recordcodec.Data
+		line := strings.TrimSpace(scanner.Text())
+		if line == "" {
+			continue
+		}
+		if err := json.Unmarshal([]byte(line), &data); err != nil {
+			continue
+		}
+		if err := fn(recordcodec.Deserialize(data)); err != nil {
+			return err
+		}
+	}
+	if err := scanner.Err(); err != nil {
+		return fmt.Errorf("failed to scan log file: %w", err)
+	}
+	return nil
+}
+
+func (s *AuditLogFileStore) PeekBatch(ctx context.Context, limit int) ([]sdklog.Record, error) {
+	select {
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	default:
+	}
+	if limit <= 0 {
+		return nil, nil
+	}
+	s.mutex.RLock()
+	defer s.mutex.RUnlock()
+	file, err := os.Open(s.logFilePath)
+	if err != nil {
+		return nil, fmt.Errorf("failed to open log file: %w", err)
+	}
+	defer file.Close()
+	records := make([]sdklog.Record, 0, limit)
+	scanner := bufio.NewScanner(file)
+	scanner.Buffer(make([]byte, 64*1024), 10*1024*1024)
+	for scanner.Scan() {
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		default:
+		}
+		var data recordcodec.Data
+		line := strings.TrimSpace(scanner.Text())
+		if line == "" {
+			continue
+		}
+		if err := json.Unmarshal([]byte(line), &data); err != nil {
+			continue
+		}
+		records = append(records, recordcodec.Deserialize(data))
+		if len(records) >= limit {
+			break
+		}
+	}
+	if err := scanner.Err(); err != nil {
+		return nil, fmt.Errorf("failed to scan log file: %w", err)
+	}
+	return records, nil
+}
+
 type AuditLogInMemoryStore struct {
 	records []sdklog.Record
 	mutex   sync.RWMutex
@@ -378,6 +459,49 @@ func (s *AuditLogInMemoryStore) GetAll(ctx context.Context) ([]sdklog.Record, er
 	defer s.mutex.RUnlock()
 	records := make([]sdklog.Record, len(s.records))
 	copy(records, s.records)
+	return records, nil
+}
+
+func (s *AuditLogInMemoryStore) WalkRecords(ctx context.Context, fn func(sdklog.Record) error) error {
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	default:
+	}
+	s.mutex.RLock()
+	records := make([]sdklog.Record, len(s.records))
+	copy(records, s.records)
+	s.mutex.RUnlock()
+	for _, record := range records {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		default:
+		}
+		if err := fn(record.Clone()); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (s *AuditLogInMemoryStore) PeekBatch(ctx context.Context, limit int) ([]sdklog.Record, error) {
+	select {
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	default:
+	}
+	if limit <= 0 {
+		return nil, nil
+	}
+	s.mutex.RLock()
+	defer s.mutex.RUnlock()
+	n := limit
+	if n > len(s.records) {
+		n = len(s.records)
+	}
+	records := make([]sdklog.Record, n)
+	copy(records, s.records[:n])
 	return records, nil
 }
 
