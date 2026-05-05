@@ -134,6 +134,122 @@ func (m *MockExceptionHandler) GetExceptionCount() int {
 	return len(m.exceptions)
 }
 
+type walkOnlyStore struct {
+	records      []Record
+	getAllCalled atomic.Bool
+	walkCalled   atomic.Bool
+}
+
+func (s *walkOnlyStore) Save(ctx context.Context, record *Record) error {
+	return nil
+}
+
+func (s *walkOnlyStore) RemoveAll(ctx context.Context, records []Record) error {
+	return nil
+}
+
+func (s *walkOnlyStore) GetAll(ctx context.Context) ([]Record, error) {
+	s.getAllCalled.Store(true)
+	return nil, fmt.Errorf("GetAll should not be called when WalkRecords is available")
+}
+
+func (s *walkOnlyStore) WalkRecords(ctx context.Context, fn func(Record) error) error {
+	s.walkCalled.Store(true)
+	for _, record := range s.records {
+		if err := fn(record); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+type replayBatchExporter struct {
+	mutex       sync.Mutex
+	exportCalls int
+	maxBatch    int
+	total       int
+}
+
+func (e *replayBatchExporter) Export(ctx context.Context, records []Record) error {
+	e.mutex.Lock()
+	defer e.mutex.Unlock()
+	e.exportCalls++
+	if len(records) > e.maxBatch {
+		e.maxBatch = len(records)
+	}
+	e.total += len(records)
+	return nil
+}
+
+func (e *replayBatchExporter) Shutdown(ctx context.Context) error {
+	return nil
+}
+
+func (e *replayBatchExporter) ForceFlush(ctx context.Context) error {
+	return nil
+}
+
+func (e *replayBatchExporter) Stats() (calls, maxBatch, total int) {
+	e.mutex.Lock()
+	defer e.mutex.Unlock()
+	return e.exportCalls, e.maxBatch, e.total
+}
+
+type peekOnlyStore struct {
+	mutex       sync.Mutex
+	records     []Record
+	peekCalled  atomic.Bool
+	getAllCalled atomic.Bool
+}
+
+func (s *peekOnlyStore) Save(ctx context.Context, record *Record) error {
+	return nil
+}
+
+func (s *peekOnlyStore) RemoveAll(ctx context.Context, records []Record) error {
+	s.mutex.Lock()
+	defer s.mutex.Unlock()
+	ids := make(map[string]bool, len(records))
+	for _, record := range records {
+		recordCopy := record
+		id, err := getAuditRecordID(&recordCopy)
+		if err == nil {
+			ids[id] = true
+		}
+	}
+	filtered := make([]Record, 0, len(s.records))
+	for _, record := range s.records {
+		recordCopy := record
+		id, err := getAuditRecordID(&recordCopy)
+		if err != nil || !ids[id] {
+			filtered = append(filtered, record)
+		}
+	}
+	s.records = filtered
+	return nil
+}
+
+func (s *peekOnlyStore) GetAll(ctx context.Context) ([]Record, error) {
+	s.getAllCalled.Store(true)
+	return nil, fmt.Errorf("GetAll should not be called when PeekBatch is available")
+}
+
+func (s *peekOnlyStore) PeekBatch(ctx context.Context, limit int) ([]Record, error) {
+	s.peekCalled.Store(true)
+	s.mutex.Lock()
+	defer s.mutex.Unlock()
+	if limit <= 0 {
+		return nil, nil
+	}
+	n := limit
+	if n > len(s.records) {
+		n = len(s.records)
+	}
+	out := make([]Record, n)
+	copy(out, s.records[:n])
+	return out, nil
+}
+
 func TestAuditLogProcessor(t *testing.T) {
 	t.Run("Basic Processing", func(t *testing.T) {
 		exporter := NewMockExporter()
@@ -1048,6 +1164,150 @@ func TestAuditLogProcessorRestartReplaysFileStoreAfterRecovery(t *testing.T) {
 		t.Fatalf("failed to read final store state: %v", err)
 	}
 	t.Fatalf("expected replay drain, remaining=%d exported=%d", len(remaining), exporter.ExportedCount())
+}
+
+func TestAuditLogProcessorLoadExistingRecordsUsesWalkRecords(t *testing.T) {
+	exporter := NewMockExporter()
+	records := []Record{
+		createTestRecord("walk-0", log.SeverityInfo),
+		createTestRecord("walk-1", log.SeverityInfo),
+		createTestRecord("walk-2", log.SeverityInfo),
+	}
+	store := &walkOnlyStore{records: records}
+	cfg := AuditLogProcessorConfig{
+		Exporter:           exporter,
+		AuditLogStore:      store,
+		ExceptionHandler:   NewMockExceptionHandler(),
+		ScheduleDelay:      5 * time.Millisecond,
+		MaxExportBatchSize: 2,
+		ExporterTimeout:    time.Second,
+		RetryPolicy: RetryPolicy{
+			InitialBackoff:    1 * time.Millisecond,
+			MaxBackoff:        5 * time.Millisecond,
+			BackoffMultiplier: 1.2,
+		},
+		DeliveryMode: AuditDeliveryModeAsyncStoreRetry,
+	}
+	processor, err := NewAuditLogProcessor(cfg)
+	if err != nil {
+		t.Fatalf("failed to create processor: %v", err)
+	}
+	defer processor.Shutdown(context.Background())
+
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		exported := 0
+		for _, batch := range exporter.GetExportedRecords() {
+			exported += len(batch)
+		}
+		if exported >= len(records) {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if !store.walkCalled.Load() {
+		t.Fatalf("expected WalkRecords to be used")
+	}
+	if store.getAllCalled.Load() {
+		t.Fatalf("GetAll should not be called when WalkRecords is available")
+	}
+}
+
+func TestAuditLogProcessorLoadExistingRecordsStreamsBoundedBatches(t *testing.T) {
+	exporter := &replayBatchExporter{}
+	records := []Record{
+		createTestRecord("stream-0", log.SeverityInfo),
+		createTestRecord("stream-1", log.SeverityInfo),
+		createTestRecord("stream-2", log.SeverityInfo),
+		createTestRecord("stream-3", log.SeverityInfo),
+		createTestRecord("stream-4", log.SeverityInfo),
+	}
+	store := &walkOnlyStore{records: records}
+	cfg := AuditLogProcessorConfig{
+		Exporter:           exporter,
+		AuditLogStore:      store,
+		ExceptionHandler:   NewMockExceptionHandler(),
+		ScheduleDelay:      5 * time.Millisecond,
+		MaxExportBatchSize: 2,
+		ExporterTimeout:    time.Second,
+		RetryPolicy: RetryPolicy{
+			InitialBackoff:    1 * time.Millisecond,
+			MaxBackoff:        5 * time.Millisecond,
+			BackoffMultiplier: 1.2,
+		},
+		DeliveryMode: AuditDeliveryModeAsyncStoreRetry,
+	}
+	processor, err := NewAuditLogProcessor(cfg)
+	if err != nil {
+		t.Fatalf("failed to create processor: %v", err)
+	}
+	defer processor.Shutdown(context.Background())
+
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		_, _, total := exporter.Stats()
+		if total == len(records) {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	calls, maxBatch, total := exporter.Stats()
+	if total != len(records) {
+		t.Fatalf("expected %d replayed records, got %d", len(records), total)
+	}
+	if maxBatch > cfg.MaxExportBatchSize {
+		t.Fatalf("max replay batch %d exceeds configured %d", maxBatch, cfg.MaxExportBatchSize)
+	}
+	if calls < 3 {
+		t.Fatalf("expected multiple replay batches, got %d calls", calls)
+	}
+	if processor.GetQueueSize() != 0 {
+		t.Fatalf("expected replay queue to stay bounded, queue=%d", processor.GetQueueSize())
+	}
+}
+
+func TestAuditLogProcessorLoadExistingRecordsUsesPeekBatch(t *testing.T) {
+	exporter := &replayBatchExporter{}
+	records := []Record{
+		createTestRecord("peek-0", log.SeverityInfo),
+		createTestRecord("peek-1", log.SeverityInfo),
+		createTestRecord("peek-2", log.SeverityInfo),
+	}
+	store := &peekOnlyStore{records: records}
+	cfg := AuditLogProcessorConfig{
+		Exporter:           exporter,
+		AuditLogStore:      store,
+		ExceptionHandler:   NewMockExceptionHandler(),
+		ScheduleDelay:      5 * time.Millisecond,
+		MaxExportBatchSize: 2,
+		ExporterTimeout:    time.Second,
+		RetryPolicy: RetryPolicy{
+			InitialBackoff:    1 * time.Millisecond,
+			MaxBackoff:        5 * time.Millisecond,
+			BackoffMultiplier: 1.2,
+		},
+		DeliveryMode: AuditDeliveryModeAsyncStoreRetry,
+	}
+	processor, err := NewAuditLogProcessor(cfg)
+	if err != nil {
+		t.Fatalf("failed to create processor: %v", err)
+	}
+	defer processor.Shutdown(context.Background())
+
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		_, _, total := exporter.Stats()
+		if total == len(records) {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if !store.peekCalled.Load() {
+		t.Fatalf("expected PeekBatch to be used")
+	}
+	if store.getAllCalled.Load() {
+		t.Fatalf("GetAll should not be called when PeekBatch is available")
+	}
 }
 
 func TestAuditLogProcessorShutdownIsIdempotent(t *testing.T) {

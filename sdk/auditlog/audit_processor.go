@@ -198,20 +198,28 @@ func NewAuditLogProcessor(config AuditLogProcessorConfig) (*AuditLogProcessor, e
 }
 
 func (p *AuditLogProcessor) loadExistingRecords() error {
+	type auditLogBatchPeeker interface {
+		PeekBatch(ctx context.Context, limit int) ([]Record, error)
+	}
+	type auditLogRecordWalker interface {
+		WalkRecords(ctx context.Context, fn func(Record) error) error
+	}
+	if peeker, ok := p.config.AuditLogStore.(auditLogBatchPeeker); ok {
+		return p.loadExistingRecordsBatched(peeker)
+	}
+	if walker, ok := p.config.AuditLogStore.(auditLogRecordWalker); ok {
+		return p.loadExistingRecordsStreaming(walker)
+	}
+
 	records, err := p.config.AuditLogStore.GetAll(context.Background())
 	if err != nil {
 		return fmt.Errorf("failed to get all records from store: %w", err)
 	}
 
-	p.queueMutex.Lock()
-	defer p.queueMutex.Unlock()
-
 	for _, record := range records {
-		priority := getSeverityPriority(record.Severity())
-		heap.Push(p.queue, PriorityRecord{
-			Record:   record,
-			Priority: priority,
-		})
+		if err := p.enqueueLoadedRecord(record); err != nil {
+			return err
+		}
 	}
 
 	go func() {
@@ -226,6 +234,130 @@ func (p *AuditLogProcessor) loadExistingRecords() error {
 	}()
 
 	return nil
+}
+
+func (p *AuditLogProcessor) loadExistingRecordsBatched(peeker interface {
+	PeekBatch(ctx context.Context, limit int) ([]Record, error)
+}) error {
+	batchSize := p.config.MaxExportBatchSize
+	if batchSize <= 0 {
+		batchSize = 1
+	}
+	for {
+		records, err := peeker.PeekBatch(context.Background(), batchSize)
+		if err != nil {
+			return fmt.Errorf("peek stored records: %w", err)
+		}
+		if len(records) == 0 {
+			break
+		}
+		if err := p.replayStoredBatch(records); err != nil {
+			break
+		}
+	}
+	go func() {
+		if err := p.exportLogs(false); err != nil {
+			p.config.ExceptionHandler.Handle(&AuditException{
+				Message:    "Failed to export loaded audit records from store",
+				Cause:      err,
+				Context:    context.Background(),
+				LogRecords: nil,
+			})
+		}
+	}()
+	return nil
+}
+
+func (p *AuditLogProcessor) loadExistingRecordsStreaming(walker interface {
+	WalkRecords(ctx context.Context, fn func(Record) error) error
+}) error {
+	batchSize := p.config.MaxExportBatchSize
+	if batchSize <= 0 {
+		batchSize = 1
+	}
+	batch := make([]Record, 0, batchSize)
+	stopReplay := false
+	if err := walker.WalkRecords(context.Background(), func(record Record) error {
+		if stopReplay {
+			return nil
+		}
+		batch = append(batch, record)
+		if len(batch) < batchSize {
+			return nil
+		}
+		if err := p.replayStoredBatch(batch); err != nil {
+			stopReplay = true
+			return nil
+		}
+		batch = batch[:0]
+		return nil
+	}); err != nil {
+		return fmt.Errorf("walk stored records: %w", err)
+	}
+	if !stopReplay && len(batch) > 0 {
+		if err := p.replayStoredBatch(batch); err != nil {
+			stopReplay = true
+		}
+	}
+	go func() {
+		if err := p.exportLogs(false); err != nil {
+			p.config.ExceptionHandler.Handle(&AuditException{
+				Message:    "Failed to export loaded audit records from store",
+				Cause:      err,
+				Context:    context.Background(),
+				LogRecords: nil,
+			})
+		}
+	}()
+	return nil
+}
+
+func (p *AuditLogProcessor) enqueueLoadedRecord(record Record) error {
+	p.queueMutex.Lock()
+	priority := getSeverityPriority(record.Severity())
+	heap.Push(p.queue, PriorityRecord{
+		Record:   record,
+		Priority: priority,
+	})
+	p.queueMutex.Unlock()
+	return nil
+}
+
+func (p *AuditLogProcessor) replayStoredBatch(records []Record) error {
+	ctx := context.Background()
+	if p.config.ExporterTimeout > 0 {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, p.config.ExporterTimeout)
+		defer cancel()
+	}
+	err := p.config.Exporter.Export(ctx, records)
+	if err != nil {
+		p.handleExportFailure(records, err)
+		return err
+	}
+	p.currentRetryAttempt.Store(0)
+	p.lastRetryTimestamp.Store(0)
+	var removeErr error
+	for attempt := 0; attempt < 5; attempt++ {
+		if attempt > 0 {
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			case <-time.After(50 * time.Millisecond):
+			}
+		}
+		removeErr = p.config.AuditLogStore.RemoveAll(ctx, records)
+		if removeErr == nil {
+			return nil
+		}
+	}
+	p.config.ExceptionHandler.Handle(&AuditException{
+		Message:    "Exported audit records but failed to remove them from the store (telemetry may have been delivered; file may still show old entries)",
+		Cause:      removeErr,
+		Context:    ctx,
+		LogRecords: records,
+	})
+	return fmt.Errorf("remove exported records from store: %w", removeErr)
 }
 
 func (p *AuditLogProcessor) startBackgroundProcessing() {
