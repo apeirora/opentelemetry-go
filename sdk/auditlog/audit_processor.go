@@ -7,6 +7,7 @@ import (
 	"container/heap"
 	"context"
 	"fmt"
+	"math"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -153,6 +154,13 @@ type AuditLogProcessor struct {
 	extension StorageExtension
 }
 
+func nonCancelContext(ctx context.Context) context.Context {
+	if ctx == nil {
+		return context.Background()
+	}
+	return context.WithoutCancel(ctx)
+}
+
 func (p *AuditLogProcessor) Enabled(ctx context.Context, param AuditEnabledParameters) bool {
 	return !p.shutdown.Load()
 }
@@ -160,6 +168,9 @@ func (p *AuditLogProcessor) Enabled(ctx context.Context, param AuditEnabledParam
 func NewAuditLogProcessor(config AuditLogProcessorConfig) (*AuditLogProcessor, error) {
 	if config.Exporter == nil {
 		return nil, fmt.Errorf("exporter cannot be nil")
+	}
+	if config.ExceptionHandler == nil {
+		config.ExceptionHandler = &DefaultAuditExceptionHandler{}
 	}
 	if config.DeliveryMode == "" {
 		config.DeliveryMode = AuditDeliveryModeAsyncStoreRetry
@@ -203,7 +214,16 @@ func (p *AuditLogProcessor) loadExistingRecords() error {
 		})
 	}
 
-	go p.exportLogs()
+	go func() {
+		if err := p.exportLogs(false); err != nil {
+			p.config.ExceptionHandler.Handle(&AuditException{
+				Message:    "Failed to export loaded audit records from store",
+				Cause:      err,
+				Context:    context.Background(),
+				LogRecords: nil,
+			})
+		}
+	}()
 
 	return nil
 }
@@ -218,7 +238,14 @@ func (p *AuditLogProcessor) startBackgroundProcessing() {
 		for {
 			select {
 			case <-ticker.C:
-				p.exportLogs()
+				if err := p.exportLogs(false); err != nil {
+					p.config.ExceptionHandler.Handle(&AuditException{
+						Message:    "Background audit export failed",
+						Cause:      err,
+						Context:    context.Background(),
+						LogRecords: nil,
+					})
+				}
 			case <-p.stopChan:
 				return
 			}
@@ -242,10 +269,10 @@ func (p *AuditLogProcessor) OnEmit(ctx context.Context, record *Record) error {
 	}
 
 	if p.config.DeliveryMode == AuditDeliveryModeSyncDirect {
-		exportCtx := ctx
+		exportCtx := nonCancelContext(ctx)
 		if p.config.ExporterTimeout > 0 {
 			var cancel context.CancelFunc
-			exportCtx, cancel = context.WithTimeout(ctx, p.config.ExporterTimeout)
+			exportCtx, cancel = context.WithTimeout(exportCtx, p.config.ExporterTimeout)
 			defer cancel()
 		}
 		if err := p.config.Exporter.Export(exportCtx, []Record{*record}); err != nil {
@@ -261,7 +288,8 @@ func (p *AuditLogProcessor) OnEmit(ctx context.Context, record *Record) error {
 		return nil
 	}
 
-	if err := p.config.AuditLogStore.Save(ctx, record); err != nil {
+	storeCtx := nonCancelContext(ctx)
+	if err := p.config.AuditLogStore.Save(storeCtx, record); err != nil {
 		exception := &AuditException{
 			Message:    "Failed to save record to audit store",
 			Cause:      err,
@@ -282,31 +310,40 @@ func (p *AuditLogProcessor) OnEmit(ctx context.Context, record *Record) error {
 	p.queueMutex.Unlock()
 
 	if queueSize >= p.config.MaxExportBatchSize {
-		go p.exportLogs()
+		go func() {
+			if err := p.exportLogs(false); err != nil {
+				p.config.ExceptionHandler.Handle(&AuditException{
+					Message:    "Audit export failed after queue reached batch size",
+					Cause:      err,
+					Context:    ctx,
+					LogRecords: nil,
+				})
+			}
+		}()
 	}
 
 	return nil
 }
 
-func (p *AuditLogProcessor) exportLogs() {
-	if p.shutdown.Load() {
-		return
+func (p *AuditLogProcessor) exportLogs(ignoreRetryDelay bool) error {
+	if p.shutdown.Load() && !ignoreRetryDelay {
+		return nil
 	}
 
 	p.queueMutex.Lock()
 	if p.queue.Len() == 0 {
 		p.queueMutex.Unlock()
-		return
+		return nil
 	}
 	p.queueMutex.Unlock()
 
 	currentTime := time.Now().UnixMilli()
-	if p.currentRetryAttempt.Load() > 0 {
+	if !ignoreRetryDelay && p.currentRetryAttempt.Load() > 0 {
 		timeSinceLastRetry := currentTime - p.lastRetryTimestamp.Load()
 		requiredDelay := p.calculateRetryDelay(int(p.currentRetryAttempt.Load()))
 
 		if timeSinceLastRetry < requiredDelay {
-			return
+			return nil
 		}
 	}
 
@@ -324,7 +361,7 @@ func (p *AuditLogProcessor) exportLogs() {
 	p.queueMutex.Unlock()
 
 	if len(recordsToExport) == 0 {
-		return
+		return nil
 	}
 
 	ctx := context.Background()
@@ -337,18 +374,39 @@ func (p *AuditLogProcessor) exportLogs() {
 	err := p.config.Exporter.Export(ctx, recordsToExport)
 	if err != nil {
 		p.handleExportFailure(recordsToExport, err)
-	} else {
-		p.currentRetryAttempt.Store(0)
-		p.lastRetryTimestamp.Store(0)
-		if err := p.config.AuditLogStore.RemoveAll(ctx, recordsToExport); err != nil {
-			fmt.Printf("Failed to remove exported records from store: %v\n", err)
+		return err
+	}
+	p.currentRetryAttempt.Store(0)
+	p.lastRetryTimestamp.Store(0)
+	var removeErr error
+	for attempt := 0; attempt < 5; attempt++ {
+		if attempt > 0 {
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			case <-time.After(50 * time.Millisecond):
+			}
+		}
+		removeErr = p.config.AuditLogStore.RemoveAll(ctx, recordsToExport)
+		if removeErr == nil {
+			return nil
 		}
 	}
+	p.config.ExceptionHandler.Handle(&AuditException{
+		Message:    "Exported audit records but failed to remove them from the store (telemetry may have been delivered; file may still show old entries)",
+		Cause:      removeErr,
+		Context:    ctx,
+		LogRecords: recordsToExport,
+	})
+	return fmt.Errorf("remove exported records from store: %w", removeErr)
 }
 
 func (p *AuditLogProcessor) calculateRetryDelay(attemptNumber int) int64 {
+	if attemptNumber < 1 {
+		attemptNumber = 1
+	}
 	delay := float64(p.config.RetryPolicy.InitialBackoff.Milliseconds())
-	delay *= float64(p.config.RetryPolicy.BackoffMultiplier * float64(attemptNumber-1))
+	delay *= math.Pow(p.config.RetryPolicy.BackoffMultiplier, float64(attemptNumber-1))
 
 	if delay > float64(p.config.RetryPolicy.MaxBackoff.Milliseconds()) {
 		delay = float64(p.config.RetryPolicy.MaxBackoff.Milliseconds())
@@ -368,6 +426,14 @@ func (p *AuditLogProcessor) handleExportFailure(records []Record, cause error) {
 	p.currentRetryAttempt.Add(1)
 	p.lastRetryTimestamp.Store(time.Now().UnixMilli())
 
+	exception := &AuditException{
+		Message:    "Failed to export audit log records",
+		Cause:      cause,
+		Context:    context.Background(),
+		LogRecords: records,
+	}
+	p.config.ExceptionHandler.Handle(exception)
+
 	p.queueMutex.Lock()
 	for _, record := range records {
 		priority := getSeverityPriority(record.Severity())
@@ -380,9 +446,6 @@ func (p *AuditLogProcessor) handleExportFailure(records []Record, cause error) {
 }
 
 func (p *AuditLogProcessor) ForceFlush(ctx context.Context) error {
-	if p.shutdown.Load() {
-		return nil
-	}
 	if p.config.DeliveryMode == AuditDeliveryModeSyncDirect {
 		return nil
 	}
@@ -396,7 +459,20 @@ func (p *AuditLogProcessor) ForceFlush(ctx context.Context) error {
 			break
 		}
 
-		p.exportLogs()
+		retryBefore := p.currentRetryAttempt.Load()
+		exportErr := p.exportLogs(true)
+		retryAfter := p.currentRetryAttempt.Load()
+
+		p.queueMutex.Lock()
+		queueAfter := p.queue.Len()
+		p.queueMutex.Unlock()
+
+		if exportErr != nil {
+			if queueAfter >= queueLen && retryAfter > retryBefore {
+				return fmt.Errorf("failed to flush audit queue: export attempts are failing")
+			}
+			return exportErr
+		}
 
 		select {
 		case <-time.After(10 * time.Millisecond):
@@ -414,6 +490,9 @@ func (p *AuditLogProcessor) Shutdown(ctx context.Context) error {
 		p.wg.Wait()
 
 		err := p.ForceFlush(ctx)
+		if shutdownErr := p.config.Exporter.Shutdown(ctx); shutdownErr != nil && err == nil {
+			err = shutdownErr
+		}
 
 		if p.extension != nil {
 			if shutdownErr := p.extension.Shutdown(ctx); shutdownErr != nil && err == nil {

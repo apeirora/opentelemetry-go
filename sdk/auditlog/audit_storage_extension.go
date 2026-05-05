@@ -7,33 +7,11 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"strconv"
 	"sync"
-	"time"
 
-	"go.opentelemetry.io/otel/log"
+	"go.opentelemetry.io/otel/sdk/auditlog/recordcodec"
 	"go.opentelemetry.io/otel/sdk/auditlog/storage"
 )
-
-type recordData struct {
-	Timestamp         time.Time
-	ObservedTimestamp time.Time
-	EventName         string
-	Severity          int32
-	SeverityText      string
-	Body              string
-	BodyKind          int
-	Attributes        []keyValuePair
-	TraceID           []byte
-	SpanID            []byte
-	TraceFlags        uint8
-}
-
-type keyValuePair struct {
-	Key   string
-	Value string
-	Kind  int
-}
 
 type AuditLogStorageExtensionAdapter struct {
 	client   storage.StorageClient
@@ -46,77 +24,6 @@ func NewAuditLogStorageExtensionAdapter(client storage.StorageClient) (*AuditLog
 		return nil, fmt.Errorf("storage client cannot be nil")
 	}
 	return &AuditLogStorageExtensionAdapter{client: client, indexKey: "audit_log_index"}, nil
-}
-
-func (s *AuditLogStorageExtensionAdapter) serializeRecord(record *Record) ([]byte, error) {
-	data := recordData{Timestamp: record.Timestamp(), ObservedTimestamp: record.ObservedTimestamp(), EventName: record.EventName(), Severity: int32(record.Severity()), SeverityText: record.SeverityText(), Body: record.Body().String(), BodyKind: int(record.Body().Kind())}
-	record.WalkAttributes(func(kv log.KeyValue) bool {
-		value := kv.Value.String()
-		switch kv.Value.Kind() {
-		case log.KindString:
-			value = kv.Value.AsString()
-		case log.KindInt64:
-			value = strconv.FormatInt(kv.Value.AsInt64(), 10)
-		case log.KindFloat64:
-			value = strconv.FormatFloat(kv.Value.AsFloat64(), 'f', -1, 64)
-		case log.KindBool:
-			value = strconv.FormatBool(kv.Value.AsBool())
-		}
-		data.Attributes = append(data.Attributes, keyValuePair{Key: string(kv.Key), Value: value, Kind: int(kv.Value.Kind())})
-		return true
-	})
-	traceID := record.TraceID()
-	spanID := record.SpanID()
-	data.TraceID = traceID[:]
-	data.SpanID = spanID[:]
-	data.TraceFlags = uint8(record.TraceFlags())
-	return json.Marshal(data)
-}
-
-func (s *AuditLogStorageExtensionAdapter) deserializeRecord(data []byte) (*Record, error) {
-	var rd recordData
-	if err := json.Unmarshal(data, &rd); err != nil {
-		return nil, err
-	}
-	record := &Record{}
-	record.SetTimestamp(rd.Timestamp)
-	record.SetObservedTimestamp(rd.ObservedTimestamp)
-	record.SetEventName(rd.EventName)
-	record.SetSeverity(log.Severity(rd.Severity))
-	record.SetSeverityText(rd.SeverityText)
-	record.SetBody(log.StringValue(rd.Body))
-	for _, attr := range rd.Attributes {
-		var value log.Value
-		switch log.Kind(attr.Kind) {
-		case log.KindString:
-			value = log.StringValue(attr.Value)
-		case log.KindInt64:
-			parsed, err := strconv.ParseInt(attr.Value, 10, 64)
-			if err != nil {
-				value = log.StringValue(attr.Value)
-			} else {
-				value = log.Int64Value(parsed)
-			}
-		case log.KindFloat64:
-			parsed, err := strconv.ParseFloat(attr.Value, 64)
-			if err != nil {
-				value = log.StringValue(attr.Value)
-			} else {
-				value = log.Float64Value(parsed)
-			}
-		case log.KindBool:
-			parsed, err := strconv.ParseBool(attr.Value)
-			if err != nil {
-				value = log.StringValue(attr.Value)
-			} else {
-				value = log.BoolValue(parsed)
-			}
-		default:
-			value = log.StringValue(attr.Value)
-		}
-		record.AddAttributes(log.KeyValue{Key: attr.Key, Value: value})
-	}
-	return record, nil
 }
 
 func (s *AuditLogStorageExtensionAdapter) Save(ctx context.Context, record *Record) error {
@@ -133,20 +40,22 @@ func (s *AuditLogStorageExtensionAdapter) Save(ctx context.Context, record *Reco
 	recordHash := getAuditRecordHash(record)
 	existingData, err := s.client.Get(ctx, recordKey)
 	if err == nil {
-		existingRecord, derr := s.deserializeRecord(existingData)
+		var decoded recordcodec.Data
+		derr := json.Unmarshal(existingData, &decoded)
 		if derr == nil {
-			existingHash := getAuditRecordHash(existingRecord)
+			existingRecord := recordcodec.Deserialize(decoded)
+			existingHash := getAuditRecordHash(&existingRecord)
 			if existingHash != "" && recordHash != "" && existingHash != recordHash {
 				return newAuditStatusError(AuditErrorConflict, "duplicate record_id with different hash", false, nil)
 			}
 			return nil
 		}
 	}
-	data, err := s.serializeRecord(record)
+	payload, err := json.Marshal(recordcodec.Serialize(record))
 	if err != nil {
 		return fmt.Errorf("failed to marshal record: %w", err)
 	}
-	if err := s.client.Set(ctx, recordKey, data); err != nil {
+	if err := s.client.Set(ctx, recordKey, payload); err != nil {
 		return fmt.Errorf("failed to save record: %w", err)
 	}
 	if err := s.addToIndex(ctx, recordID); err != nil {
@@ -192,11 +101,12 @@ func (s *AuditLogStorageExtensionAdapter) GetAll(ctx context.Context) ([]Record,
 		if err != nil {
 			continue
 		}
-		record, err := s.deserializeRecord(data)
-		if err != nil {
+		var decoded recordcodec.Data
+		if err := json.Unmarshal(data, &decoded); err != nil {
 			continue
 		}
-		records = append(records, *record)
+		record := recordcodec.Deserialize(decoded)
+		records = append(records, record)
 	}
 	return records, nil
 }

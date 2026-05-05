@@ -40,6 +40,30 @@ type canonicalAuditRecord struct {
 	PrevHash      string               `json:"prev_hash,omitempty"`
 }
 
+func signAuditRecordHMAC(record AuditRecord, key []byte, configuredHashAlgorithm string) (AuditRecord, error) {
+	if len(key) == 0 {
+		return AuditRecord{}, fmt.Errorf("hmac key is required for signing")
+	}
+	alg := resolveHashAlgorithm(record, configuredHashAlgorithm)
+	canonical, err := canonicalizeAuditRecord(record)
+	if err != nil {
+		return AuditRecord{}, err
+	}
+	hashHex, err := computeHashHex(alg, canonical)
+	if err != nil {
+		return AuditRecord{}, err
+	}
+	h, err := hmacHasherForAlgorithm(alg)
+	if err != nil {
+		return AuditRecord{}, err
+	}
+	mac := hmac.New(h, key)
+	_, _ = mac.Write(canonical)
+	record.Hash = hashHex
+	record.HMAC = strings.ToLower(hex.EncodeToString(mac.Sum(nil)))
+	return record, nil
+}
+
 func verifyAuditIntegrity(
 	record AuditRecord,
 	hmacKey []byte,

@@ -4,15 +4,19 @@
 package store
 
 import (
+	"bufio"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 
 	"go.opentelemetry.io/otel/sdk/auditlog/identity"
+	"go.opentelemetry.io/otel/sdk/auditlog/recordcodec"
 	"go.opentelemetry.io/otel/sdk/auditlog/status"
 	sdklog "go.opentelemetry.io/otel/sdk/log"
 )
@@ -93,29 +97,40 @@ func (s *AuditLogFileStore) loadExistingRecordIds(ctx context.Context) error {
 	if info, err := file.Stat(); err != nil || info.Size() == 0 {
 		return nil
 	}
-	decoder := json.NewDecoder(file)
-	for {
+	scanner := bufio.NewScanner(file)
+	scanner.Buffer(make([]byte, 64*1024), 10*1024*1024)
+	for scanner.Scan() {
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
 		default:
 		}
-		var record sdklog.Record
-		if err := decoder.Decode(&record); err != nil {
-			if err == io.EOF {
-				break
-			}
+		var data recordcodec.Data
+		line := strings.TrimSpace(scanner.Text())
+		if line == "" {
 			continue
 		}
+		if err := json.Unmarshal([]byte(line), &data); err != nil {
+			continue
+		}
+		record := recordcodec.Deserialize(data)
 		recordID, err := identity.GetRecordID(&record)
 		if err == nil {
 			s.loggedRecords[recordID] = identity.GetRecordHash(&record)
 		}
 	}
+	if err := scanner.Err(); err != nil {
+		return fmt.Errorf("failed to scan log file: %w", err)
+	}
 	return nil
 }
 
 func (s *AuditLogFileStore) Save(ctx context.Context, record *sdklog.Record) error {
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	default:
+	}
 	if record == nil {
 		return fmt.Errorf("record cannot be nil")
 	}
@@ -137,8 +152,9 @@ func (s *AuditLogFileStore) Save(ctx context.Context, record *sdklog.Record) err
 		return fmt.Errorf("failed to open log file for writing: %w", err)
 	}
 	defer file.Close()
+	data := recordcodec.Serialize(record)
 	encoder := json.NewEncoder(file)
-	if err := encoder.Encode(record); err != nil {
+	if err := encoder.Encode(data); err != nil {
 		return fmt.Errorf("failed to encode record: %w", err)
 	}
 	if _, err := file.WriteString("\n"); err != nil {
@@ -149,6 +165,11 @@ func (s *AuditLogFileStore) Save(ctx context.Context, record *sdklog.Record) err
 }
 
 func (s *AuditLogFileStore) RemoveAll(ctx context.Context, records []sdklog.Record) error {
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	default:
+	}
 	if len(records) == 0 {
 		return nil
 	}
@@ -165,31 +186,39 @@ func (s *AuditLogFileStore) RemoveAll(ctx context.Context, records []sdklog.Reco
 	if err != nil {
 		return fmt.Errorf("failed to open log file for reading: %w", err)
 	}
-	defer file.Close()
-	var remainingRecords []sdklog.Record
-	decoder := json.NewDecoder(file)
-	for {
+	var remainingRecords []recordcodec.Data
+	scanner := bufio.NewScanner(file)
+	scanner.Buffer(make([]byte, 64*1024), 10*1024*1024)
+	for scanner.Scan() {
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
 		default:
 		}
-		var record sdklog.Record
-		if err := decoder.Decode(&record); err != nil {
-			if err == io.EOF {
-				break
-			}
+		var data recordcodec.Data
+		line := strings.TrimSpace(scanner.Text())
+		if line == "" {
 			continue
 		}
+		if err := json.Unmarshal([]byte(line), &data); err != nil {
+			continue
+		}
+		record := recordcodec.Deserialize(data)
 		recordID, err := identity.GetRecordID(&record)
 		if err != nil {
 			continue
 		}
 		if !recordIDsToRemove[recordID] {
-			remainingRecords = append(remainingRecords, record)
+			remainingRecords = append(remainingRecords, data)
 		} else {
 			delete(s.loggedRecords, recordID)
 		}
+	}
+	if err := scanner.Err(); err != nil {
+		return fmt.Errorf("failed to scan source log file: %w", err)
+	}
+	if err := file.Close(); err != nil {
+		return fmt.Errorf("failed to close source log file: %w", err)
 	}
 	tempFile, err := os.CreateTemp(filepath.Dir(s.logFilePath), "audit_temp_*")
 	if err != nil {
@@ -210,13 +239,46 @@ func (s *AuditLogFileStore) RemoveAll(ctx context.Context, records []sdklog.Reco
 	if err := tempFile.Close(); err != nil {
 		return fmt.Errorf("failed to close temp file: %w", err)
 	}
-	if err := os.Rename(tempFile.Name(), s.logFilePath); err != nil {
+	if err := replaceFile(tempFile.Name(), s.logFilePath); err != nil {
 		return fmt.Errorf("failed to replace original file: %w", err)
 	}
 	return nil
 }
 
+func replaceFile(sourcePath, targetPath string) error {
+	if err := os.Rename(sourcePath, targetPath); err == nil {
+		return nil
+	}
+	if err := os.Remove(targetPath); err != nil && !os.IsNotExist(err) {
+		return err
+	}
+	if err := os.Rename(sourcePath, targetPath); err == nil {
+		return nil
+	}
+	return copyFileOverwrite(sourcePath, targetPath)
+}
+
+func copyFileOverwrite(sourcePath, targetPath string) error {
+	src, err := os.Open(sourcePath)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = src.Close() }()
+	dst, err := os.OpenFile(targetPath, os.O_WRONLY|os.O_TRUNC, 0644)
+	if err != nil {
+		return err
+	}
+	_, copyErr := io.Copy(dst, src)
+	closeErr := dst.Close()
+	return errors.Join(copyErr, closeErr)
+}
+
 func (s *AuditLogFileStore) GetAll(ctx context.Context) ([]sdklog.Record, error) {
+	select {
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	default:
+	}
 	s.mutex.RLock()
 	defer s.mutex.RUnlock()
 	file, err := os.Open(s.logFilePath)
@@ -225,21 +287,27 @@ func (s *AuditLogFileStore) GetAll(ctx context.Context) ([]sdklog.Record, error)
 	}
 	defer file.Close()
 	var records []sdklog.Record
-	decoder := json.NewDecoder(file)
-	for {
+	scanner := bufio.NewScanner(file)
+	scanner.Buffer(make([]byte, 64*1024), 10*1024*1024)
+	for scanner.Scan() {
 		select {
 		case <-ctx.Done():
 			return nil, ctx.Err()
 		default:
 		}
-		var record sdklog.Record
-		if err := decoder.Decode(&record); err != nil {
-			if err == io.EOF {
-				break
-			}
+		var data recordcodec.Data
+		line := strings.TrimSpace(scanner.Text())
+		if line == "" {
 			continue
 		}
+		if err := json.Unmarshal([]byte(line), &data); err != nil {
+			continue
+		}
+		record := recordcodec.Deserialize(data)
 		records = append(records, record)
+	}
+	if err := scanner.Err(); err != nil {
+		return nil, fmt.Errorf("failed to scan log file: %w", err)
 	}
 	return records, nil
 }
@@ -254,6 +322,11 @@ func NewAuditLogInMemoryStore() *AuditLogInMemoryStore {
 }
 
 func (s *AuditLogInMemoryStore) Save(ctx context.Context, record *sdklog.Record) error {
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	default:
+	}
 	if record == nil {
 		return fmt.Errorf("record cannot be nil")
 	}
@@ -265,6 +338,11 @@ func (s *AuditLogInMemoryStore) Save(ctx context.Context, record *sdklog.Record)
 }
 
 func (s *AuditLogInMemoryStore) RemoveAll(ctx context.Context, records []sdklog.Record) error {
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	default:
+	}
 	if len(records) == 0 {
 		return nil
 	}
@@ -291,6 +369,11 @@ func (s *AuditLogInMemoryStore) RemoveAll(ctx context.Context, records []sdklog.
 }
 
 func (s *AuditLogInMemoryStore) GetAll(ctx context.Context) ([]sdklog.Record, error) {
+	select {
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	default:
+	}
 	s.mutex.RLock()
 	defer s.mutex.RUnlock()
 	records := make([]sdklog.Record, len(s.records))
