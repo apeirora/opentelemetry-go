@@ -91,6 +91,7 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 - In `go.opentelemetry.io/otel/sdk/auditlog/store`, `AuditLogFileStore` compaction falls back to truncating the log file and copying from a temp file when rename/replace fails (helps Windows when the log path is open elsewhere).
 - In `go.opentelemetry.io/otel/sdk/auditlog`, `identity.GetRecordID` uses the last non-empty `audit.record_id` when iterating attributes, and `EmitWithResult` skips adding `audit.record_id` when the cloned `Record` already contains the same id. Together this keeps file-store compaction aligned with exported records when callers pre-set `audit.record_id` on the embedded `Record` (as in the auditlog testapp).
 - In `go.opentelemetry.io/otel/sdk/auditlog/recordcodec`, `Deserialize` applies unlimited attribute count and value length limits while rebuilding the `sdk/log.Record`, matching logger-created records. Previously the zero-value limits treated `0` as "truncate strings to length zero", so persisted audit lines lost attribute payloads and durable store compaction could not match exported record ids.
+- In `go.opentelemetry.io/otel/sdk/auditlog`, add `AuditStorageWriteMode` with builder `SetStorageWriteMode` to choose between `AuditStorageWriteAlways` (default) and `AuditStorageWriteOnError` (persist only after failed export attempts).
 
 <!-- Released section -->
 <!-- Don't change this section unless doing release -->

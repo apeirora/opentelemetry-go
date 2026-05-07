@@ -34,6 +34,7 @@ func NewAuditLogProcessorBuilder(exporter Exporter, store AuditLogStore) *AuditL
 			RetryPolicy:        GetDefaultRetryPolicy(),
 			WaitOnExport:       false,
 			DeliveryMode:       AuditDeliveryModeAsyncStoreRetry,
+			StorageWriteMode:   AuditStorageWriteAlways,
 		},
 	}
 }
@@ -53,6 +54,7 @@ func NewAuditLogProcessorWithStorage(exporter Exporter) *AuditLogProcessorBuilde
 			RetryPolicy:        GetDefaultRetryPolicy(),
 			WaitOnExport:       false,
 			DeliveryMode:       AuditDeliveryModeAsyncStoreRetry,
+			StorageWriteMode:   AuditStorageWriteAlways,
 		},
 	}
 }
@@ -113,6 +115,14 @@ func (b *AuditLogProcessorBuilder) SetDeliveryMode(mode AuditDeliveryMode) *Audi
 		panic("delivery mode must be async_store_retry or sync_direct")
 	}
 	b.config.DeliveryMode = mode
+	return b
+}
+
+func (b *AuditLogProcessorBuilder) SetStorageWriteMode(mode AuditStorageWriteMode) *AuditLogProcessorBuilder {
+	if mode != AuditStorageWriteAlways && mode != AuditStorageWriteOnError {
+		panic("storage write mode must be always or on_error")
+	}
+	b.config.StorageWriteMode = mode
 	return b
 }
 
@@ -202,6 +212,9 @@ func (b *AuditLogProcessorBuilder) ValidateConfig() error {
 	}
 	if b.config.RetryPolicy.BackoffMultiplier <= 0 {
 		return fmt.Errorf("retry policy backoff multiplier must be positive")
+	}
+	if b.config.StorageWriteMode != AuditStorageWriteAlways && b.config.StorageWriteMode != AuditStorageWriteOnError {
+		return fmt.Errorf("storage write mode must be always or on_error")
 	}
 	return nil
 }
