@@ -8,6 +8,7 @@ import (
 	"context"
 	"fmt"
 	"math"
+	"os"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -67,13 +68,18 @@ type AuditLogProcessorConfig struct {
 	RetryPolicy        RetryPolicy
 	WaitOnExport       bool
 	DeliveryMode       AuditDeliveryMode
+	StorageWriteMode   AuditStorageWriteMode
 }
 
 type AuditDeliveryMode string
+type AuditStorageWriteMode string
 
 const (
 	AuditDeliveryModeAsyncStoreRetry AuditDeliveryMode = "async_store_retry"
 	AuditDeliveryModeSyncDirect      AuditDeliveryMode = "sync_direct"
+
+	AuditStorageWriteAlways  AuditStorageWriteMode = "always"
+	AuditStorageWriteOnError AuditStorageWriteMode = "on_error"
 )
 
 func DefaultAuditLogProcessorConfig(exporter Exporter, store AuditLogStore) AuditLogProcessorConfig {
@@ -87,6 +93,7 @@ func DefaultAuditLogProcessorConfig(exporter Exporter, store AuditLogStore) Audi
 		RetryPolicy:        GetDefaultRetryPolicy(),
 		WaitOnExport:       false,
 		DeliveryMode:       AuditDeliveryModeAsyncStoreRetry,
+		StorageWriteMode:   AuditStorageWriteAlways,
 	}
 }
 
@@ -154,6 +161,11 @@ type AuditLogProcessor struct {
 	extension StorageExtension
 }
 
+func auditReplayDebugEnabled() bool {
+	v := os.Getenv("OTEL_AUDITLOG_DEBUG_REPLAY")
+	return v == "1" || v == "true" || v == "TRUE"
+}
+
 func nonCancelContext(ctx context.Context) context.Context {
 	if ctx == nil {
 		return context.Background()
@@ -174,6 +186,9 @@ func NewAuditLogProcessor(config AuditLogProcessorConfig) (*AuditLogProcessor, e
 	}
 	if config.DeliveryMode == "" {
 		config.DeliveryMode = AuditDeliveryModeAsyncStoreRetry
+	}
+	if config.StorageWriteMode == "" {
+		config.StorageWriteMode = AuditStorageWriteAlways
 	}
 	if config.DeliveryMode == AuditDeliveryModeAsyncStoreRetry && config.AuditLogStore == nil {
 		return nil, fmt.Errorf("audit log store cannot be nil")
@@ -243,16 +258,37 @@ func (p *AuditLogProcessor) loadExistingRecordsBatched(peeker interface {
 	if batchSize <= 0 {
 		batchSize = 1
 	}
+	debugReplay := auditReplayDebugEnabled()
+	if debugReplay {
+		fmt.Printf("audit replay: start batch_size=%d\n", batchSize)
+	}
+	totalReplayed := 0
 	for {
 		records, err := peeker.PeekBatch(context.Background(), batchSize)
 		if err != nil {
+			if debugReplay {
+				fmt.Printf("audit replay: peek error: %v\n", err)
+			}
 			return fmt.Errorf("peek stored records: %w", err)
 		}
 		if len(records) == 0 {
+			if debugReplay {
+				fmt.Printf("audit replay: store drained total_replayed=%d\n", totalReplayed)
+			}
 			break
 		}
+		if debugReplay {
+			fmt.Printf("audit replay: fetched batch len=%d\n", len(records))
+		}
 		if err := p.replayStoredBatch(records); err != nil {
+			if debugReplay {
+				fmt.Printf("audit replay: batch failed len=%d err=%v (stopping replay loop)\n", len(records), err)
+			}
 			break
+		}
+		totalReplayed += len(records)
+		if debugReplay {
+			fmt.Printf("audit replay: batch delivered+removed len=%d total_replayed=%d\n", len(records), totalReplayed)
 		}
 	}
 	go func() {
@@ -337,27 +373,7 @@ func (p *AuditLogProcessor) replayStoredBatch(records []Record) error {
 	}
 	p.currentRetryAttempt.Store(0)
 	p.lastRetryTimestamp.Store(0)
-	var removeErr error
-	for attempt := 0; attempt < 5; attempt++ {
-		if attempt > 0 {
-			select {
-			case <-ctx.Done():
-				return ctx.Err()
-			case <-time.After(50 * time.Millisecond):
-			}
-		}
-		removeErr = p.config.AuditLogStore.RemoveAll(ctx, records)
-		if removeErr == nil {
-			return nil
-		}
-	}
-	p.config.ExceptionHandler.Handle(&AuditException{
-		Message:    "Exported audit records but failed to remove them from the store (telemetry may have been delivered; file may still show old entries)",
-		Cause:      removeErr,
-		Context:    ctx,
-		LogRecords: records,
-	})
-	return fmt.Errorf("remove exported records from store: %w", removeErr)
+	return p.removeExportedRecordsFromStore(ctx, records)
 }
 
 func (p *AuditLogProcessor) startBackgroundProcessing() {
@@ -420,16 +436,18 @@ func (p *AuditLogProcessor) OnEmit(ctx context.Context, record *Record) error {
 		return nil
 	}
 
-	storeCtx := nonCancelContext(ctx)
-	if err := p.config.AuditLogStore.Save(storeCtx, record); err != nil {
-		exception := &AuditException{
-			Message:    "Failed to save record to audit store",
-			Cause:      err,
-			Context:    ctx,
-			LogRecords: []Record{*record},
+	if p.config.StorageWriteMode == AuditStorageWriteAlways {
+		storeCtx := nonCancelContext(ctx)
+		if err := p.config.AuditLogStore.Save(storeCtx, record); err != nil {
+			exception := &AuditException{
+				Message:    "Failed to save record to audit store",
+				Cause:      err,
+				Context:    ctx,
+				LogRecords: []Record{*record},
+			}
+			p.config.ExceptionHandler.Handle(exception)
+			return exception
 		}
-		p.config.ExceptionHandler.Handle(exception)
-		return exception
 	}
 
 	p.queueMutex.Lock()
@@ -503,6 +521,7 @@ func (p *AuditLogProcessor) exportLogs(ignoreRetryDelay bool) error {
 		defer cancel()
 	}
 
+	shouldRemove := p.shouldRemoveExportedRecordsFromStore()
 	err := p.config.Exporter.Export(ctx, recordsToExport)
 	if err != nil {
 		p.handleExportFailure(recordsToExport, err)
@@ -510,6 +529,20 @@ func (p *AuditLogProcessor) exportLogs(ignoreRetryDelay bool) error {
 	}
 	p.currentRetryAttempt.Store(0)
 	p.lastRetryTimestamp.Store(0)
+	if !shouldRemove {
+		return nil
+	}
+	return p.removeExportedRecordsFromStore(ctx, recordsToExport)
+}
+
+func (p *AuditLogProcessor) shouldRemoveExportedRecordsFromStore() bool {
+	if p.config.StorageWriteMode == AuditStorageWriteAlways {
+		return true
+	}
+	return p.currentRetryAttempt.Load() > 0
+}
+
+func (p *AuditLogProcessor) removeExportedRecordsFromStore(ctx context.Context, records []Record) error {
 	var removeErr error
 	for attempt := 0; attempt < 5; attempt++ {
 		if attempt > 0 {
@@ -519,7 +552,7 @@ func (p *AuditLogProcessor) exportLogs(ignoreRetryDelay bool) error {
 			case <-time.After(50 * time.Millisecond):
 			}
 		}
-		removeErr = p.config.AuditLogStore.RemoveAll(ctx, recordsToExport)
+		removeErr = p.config.AuditLogStore.RemoveAll(ctx, records)
 		if removeErr == nil {
 			return nil
 		}
@@ -528,7 +561,7 @@ func (p *AuditLogProcessor) exportLogs(ignoreRetryDelay bool) error {
 		Message:    "Exported audit records but failed to remove them from the store (telemetry may have been delivered; file may still show old entries)",
 		Cause:      removeErr,
 		Context:    ctx,
-		LogRecords: recordsToExport,
+		LogRecords: records,
 	})
 	return fmt.Errorf("remove exported records from store: %w", removeErr)
 }
@@ -555,6 +588,20 @@ func (p *AuditLogProcessor) calculateRetryDelay(attemptNumber int) int64 {
 }
 
 func (p *AuditLogProcessor) handleExportFailure(records []Record, cause error) {
+	if p.config.StorageWriteMode == AuditStorageWriteOnError {
+		storeCtx := context.Background()
+		for _, record := range records {
+			recordCopy := record
+			if err := p.config.AuditLogStore.Save(storeCtx, &recordCopy); err != nil {
+				p.config.ExceptionHandler.Handle(&AuditException{
+					Message:    "Failed to save failed export record to audit store",
+					Cause:      err,
+					Context:    storeCtx,
+					LogRecords: []Record{recordCopy},
+				})
+			}
+		}
+	}
 	p.currentRetryAttempt.Add(1)
 	p.lastRetryTimestamp.Store(time.Now().UnixMilli())
 

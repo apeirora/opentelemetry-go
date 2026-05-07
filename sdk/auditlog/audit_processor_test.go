@@ -250,6 +250,32 @@ func (s *peekOnlyStore) PeekBatch(ctx context.Context, limit int) ([]Record, err
 	return out, nil
 }
 
+type countingInMemoryStore struct {
+	inner       *AuditLogInMemoryStore
+	removeCalls atomic.Int64
+}
+
+func newCountingInMemoryStore() *countingInMemoryStore {
+	return &countingInMemoryStore{inner: NewAuditLogInMemoryStore()}
+}
+
+func (s *countingInMemoryStore) Save(ctx context.Context, record *Record) error {
+	return s.inner.Save(ctx, record)
+}
+
+func (s *countingInMemoryStore) RemoveAll(ctx context.Context, records []Record) error {
+	s.removeCalls.Add(1)
+	return s.inner.RemoveAll(ctx, records)
+}
+
+func (s *countingInMemoryStore) GetAll(ctx context.Context) ([]Record, error) {
+	return s.inner.GetAll(ctx)
+}
+
+func (s *countingInMemoryStore) GetRecordCount() int {
+	return s.inner.GetRecordCount()
+}
+
 func TestAuditLogProcessor(t *testing.T) {
 	t.Run("Basic Processing", func(t *testing.T) {
 		exporter := NewMockExporter()
@@ -1307,6 +1333,126 @@ func TestAuditLogProcessorLoadExistingRecordsUsesPeekBatch(t *testing.T) {
 	}
 	if store.getAllCalled.Load() {
 		t.Fatalf("GetAll should not be called when PeekBatch is available")
+	}
+}
+
+func TestAuditLogProcessorStorageWriteOnErrorDoesNotPersistSuccessfulExports(t *testing.T) {
+	exporter := NewMockExporter()
+	store := NewAuditLogInMemoryStore()
+	cfg := AuditLogProcessorConfig{
+		Exporter:           exporter,
+		AuditLogStore:      store,
+		ExceptionHandler:   NewMockExceptionHandler(),
+		ScheduleDelay:      5 * time.Millisecond,
+		MaxExportBatchSize: 1,
+		ExporterTimeout:    time.Second,
+		RetryPolicy: RetryPolicy{
+			InitialBackoff:    1 * time.Millisecond,
+			MaxBackoff:        5 * time.Millisecond,
+			BackoffMultiplier: 1.2,
+		},
+		DeliveryMode:     AuditDeliveryModeAsyncStoreRetry,
+		StorageWriteMode: AuditStorageWriteOnError,
+	}
+	processor, err := NewAuditLogProcessor(cfg)
+	if err != nil {
+		t.Fatalf("failed to create processor: %v", err)
+	}
+	defer processor.Shutdown(context.Background())
+
+	r := createTestRecord("on-error-success", log.SeverityInfo)
+	if err := processor.OnEmit(context.Background(), &r); err != nil {
+		t.Fatalf("emit failed: %v", err)
+	}
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if exporter.GetExportCount() >= 1 {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if got := store.GetRecordCount(); got != 0 {
+		t.Fatalf("expected empty store for successful export with on_error mode, got %d", got)
+	}
+}
+
+func TestAuditLogProcessorStorageWriteOnErrorPersistsFailedExports(t *testing.T) {
+	exporter := &gatedExporter{}
+	store := NewAuditLogInMemoryStore()
+	cfg := AuditLogProcessorConfig{
+		Exporter:           exporter,
+		AuditLogStore:      store,
+		ExceptionHandler:   NewMockExceptionHandler(),
+		ScheduleDelay:      5 * time.Millisecond,
+		MaxExportBatchSize: 1,
+		ExporterTimeout:    time.Second,
+		RetryPolicy: RetryPolicy{
+			InitialBackoff:    1 * time.Millisecond,
+			MaxBackoff:        5 * time.Millisecond,
+			BackoffMultiplier: 1.2,
+		},
+		DeliveryMode:     AuditDeliveryModeAsyncStoreRetry,
+		StorageWriteMode: AuditStorageWriteOnError,
+	}
+	processor, err := NewAuditLogProcessor(cfg)
+	if err != nil {
+		t.Fatalf("failed to create processor: %v", err)
+	}
+	defer processor.Shutdown(context.Background())
+
+	r := createTestRecord("on-error-fail", log.SeverityInfo)
+	if err := processor.OnEmit(context.Background(), &r); err != nil {
+		t.Fatalf("emit failed: %v", err)
+	}
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if store.GetRecordCount() >= 1 {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if got := store.GetRecordCount(); got == 0 {
+		t.Fatalf("expected failed export to be persisted with on_error mode")
+	}
+}
+
+func TestAuditLogProcessorStorageWriteOnErrorSkipsRemoveForFreshSuccessfulBatch(t *testing.T) {
+	exporter := NewMockExporter()
+	store := newCountingInMemoryStore()
+	cfg := AuditLogProcessorConfig{
+		Exporter:           exporter,
+		AuditLogStore:      store,
+		ExceptionHandler:   NewMockExceptionHandler(),
+		ScheduleDelay:      5 * time.Millisecond,
+		MaxExportBatchSize: 1,
+		ExporterTimeout:    time.Second,
+		RetryPolicy: RetryPolicy{
+			InitialBackoff:    1 * time.Millisecond,
+			MaxBackoff:        5 * time.Millisecond,
+			BackoffMultiplier: 1.2,
+		},
+		DeliveryMode:     AuditDeliveryModeAsyncStoreRetry,
+		StorageWriteMode: AuditStorageWriteOnError,
+	}
+	processor, err := NewAuditLogProcessor(cfg)
+	if err != nil {
+		t.Fatalf("failed to create processor: %v", err)
+	}
+	defer processor.Shutdown(context.Background())
+
+	r := createTestRecord("on-error-no-remove", log.SeverityInfo)
+	if err := processor.OnEmit(context.Background(), &r); err != nil {
+		t.Fatalf("emit failed: %v", err)
+	}
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if exporter.GetExportCount() >= 1 {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if got := store.removeCalls.Load(); got != 0 {
+		t.Fatalf("expected no RemoveAll calls for fresh successful batch in on_error mode, got %d", got)
 	}
 }
 

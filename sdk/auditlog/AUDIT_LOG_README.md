@@ -85,6 +85,7 @@ Available builder setters:
 - `SetRetryPolicy`
 - `SetWaitOnExport`
 - `SetDeliveryMode`
+- `SetStorageWriteMode`
 
 `BuildOrPanic`, `GetConfig`, and `ValidateConfig` are also available.
 
@@ -146,6 +147,11 @@ if err != nil {
 
 - `AuditDeliveryModeAsyncStoreRetry` (default): save to store first, queue, and export in background with retries.
 - `AuditDeliveryModeSyncDirect`: send directly to exporter on `OnEmit` without queue/store persistence.
+
+`AuditLogProcessorConfig.StorageWriteMode` controls when records are written to store in async mode:
+
+- `AuditStorageWriteAlways` (default): save before export attempt.
+- `AuditStorageWriteOnError`: save only when an export attempt fails.
 
 Example:
 
