@@ -13,11 +13,11 @@ import (
 )
 
 func TestEmitWithResultPolicyUnauthorized(t *testing.T) {
-	provider := NewAuditLoggerProvider(
+	provider := NewAuditLoggerProvider(policyTestProviderOpts(
 		WithAuditAuthorizer(func(ctx context.Context, record AuditRecord) error {
 			return newAuditStatusError(AuditErrorUnauthorized, "missing credentials", false, nil)
 		}),
-	)
+	)...)
 	logger := provider.Logger("test")
 	result := logger.EmitWithResult(context.Background(), newValidAuditRecord("body"))
 	if result.StatusCode != 401 {
@@ -26,11 +26,11 @@ func TestEmitWithResultPolicyUnauthorized(t *testing.T) {
 }
 
 func TestEmitWithResultPolicyForbiddenOnGenericAuthorizerError(t *testing.T) {
-	provider := NewAuditLoggerProvider(
+	provider := NewAuditLoggerProvider(policyTestProviderOpts(
 		WithAuditAuthorizer(func(ctx context.Context, record AuditRecord) error {
 			return errors.New("denied")
 		}),
-	)
+	)...)
 	logger := provider.Logger("test")
 	result := logger.EmitWithResult(context.Background(), newValidAuditRecord("body"))
 	if result.StatusCode != 403 {
@@ -39,9 +39,9 @@ func TestEmitWithResultPolicyForbiddenOnGenericAuthorizerError(t *testing.T) {
 }
 
 func TestEmitWithResultPolicyPayloadTooLarge(t *testing.T) {
-	provider := NewAuditLoggerProvider(
+	provider := NewAuditLoggerProvider(policyTestProviderOpts(
 		WithAuditMaxBodyBytes(4),
-	)
+	)...)
 	logger := provider.Logger("test")
 	result := logger.EmitWithResult(context.Background(), newValidAuditRecord("too-large-body"))
 	if result.StatusCode != 413 {
@@ -50,9 +50,9 @@ func TestEmitWithResultPolicyPayloadTooLarge(t *testing.T) {
 }
 
 func TestEmitWithResultPolicyAttributeCountTooLarge(t *testing.T) {
-	provider := NewAuditLoggerProvider(
+	provider := NewAuditLoggerProvider(policyTestProviderOpts(
 		WithAuditMaxAttributeCount(1),
-	)
+	)...)
 	logger := provider.Logger("test")
 	record := newValidAuditRecord("body")
 	record.AddAttributes(log.String("extra", "v"))
@@ -63,9 +63,9 @@ func TestEmitWithResultPolicyAttributeCountTooLarge(t *testing.T) {
 }
 
 func TestEmitWithResultPolicyRateLimited(t *testing.T) {
-	provider := NewAuditLoggerProvider(
+	provider := NewAuditLoggerProvider(policyTestProviderOpts(
 		WithAuditMaxRequestsPerSecond(1),
-	)
+	)...)
 	logger := provider.Logger("test")
 	first := logger.EmitWithResult(context.Background(), newValidAuditRecord("body-1"))
 	second := logger.EmitWithResult(context.Background(), newValidAuditRecord("body-2"))
@@ -75,6 +75,16 @@ func TestEmitWithResultPolicyRateLimited(t *testing.T) {
 	if second.StatusCode != 429 {
 		t.Fatalf("expected second status 429, got %d", second.StatusCode)
 	}
+}
+
+const policyTestHMACKey = "policy-test-hmac-key"
+
+func policyTestProviderOpts(extra ...AuditLoggerProviderOption) []AuditLoggerProviderOption {
+	opts := []AuditLoggerProviderOption{
+		WithAuditHMACVerificationKey([]byte(policyTestHMACKey)),
+		WithAuditHashAlgorithm("sha256"),
+	}
+	return append(opts, extra...)
 }
 
 func newValidAuditRecord(body string) AuditRecord {
@@ -91,8 +101,6 @@ func newValidAuditRecord(body string) AuditRecord {
 		Resource:      log.StringValue("resource"),
 		Outcome:       "success",
 		RecordID:      "record-1",
-		Hash:          "hash-1",
-		Signature:     "signature-1",
 		SchemaVersion: "1.0",
 	}
 }

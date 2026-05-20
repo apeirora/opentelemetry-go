@@ -43,8 +43,14 @@ func TestEmitWithResultAutoHMACSigning(t *testing.T) {
 	if res.StatusCode != 202 {
 		t.Fatalf("expected 202 without processors, got %d %s", res.StatusCode, res.Reason)
 	}
-	if res.Hash != wantSigned.Hash {
-		t.Fatalf("auto-sign hash %q want %q", res.Hash, wantSigned.Hash)
+	if res.Hash != "" {
+		t.Fatalf("expected empty hash in result, got %q", res.Hash)
+	}
+	if wantSigned.Hash != "" {
+		t.Fatalf("expected empty hash on signed record, got %q", wantSigned.Hash)
+	}
+	if wantSigned.HMAC == "" {
+		t.Fatal("expected hmac on signed record")
 	}
 	if err := verifyAuditIntegrity(wantSigned, key, nil, "sha256"); err != nil {
 		t.Fatal(err)

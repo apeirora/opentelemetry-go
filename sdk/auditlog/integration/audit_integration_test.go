@@ -208,17 +208,6 @@ func TestAuditIntegrationIntegrityAndDeliverySemantics(t *testing.T) {
 		t.Fatalf("expected one export after valid record, got %d", exporter.ExportCount())
 	}
 
-	invalidHash := valid
-	invalidHash.RecordID = "invalid-hash"
-	invalidHash.Hash = "deadbeef"
-	invalidHashResult := logger.EmitWithResult(context.Background(), invalidHash)
-	if invalidHashResult.StatusCode != 400 {
-		t.Fatalf("expected 400 for invalid hash, got %d", invalidHashResult.StatusCode)
-	}
-	if exporter.ExportCount() != 1 {
-		t.Fatalf("export count should remain 1 after invalid hash, got %d", exporter.ExportCount())
-	}
-
 	invalidHMAC := makeValidAuditRecordForTest(t, "invalid-hmac", hmacKey)
 	invalidHMAC.HMAC = "bad-hmac"
 	invalidHMACResult := logger.EmitWithResult(context.Background(), invalidHMAC)
@@ -545,9 +534,6 @@ func makeValidAuditRecordForTest(t *testing.T, suffix string, hmacKey []byte) au
 	if err != nil {
 		t.Fatalf("failed to canonicalize audit record: %v", err)
 	}
-	sum := sha256.Sum256(canonical)
-	record.Hash = hex.EncodeToString(sum[:])
-
 	mac := hmac.New(sha256.New, hmacKey)
 	_, _ = mac.Write(canonical)
 	record.HMAC = strings.ToLower(hex.EncodeToString(mac.Sum(nil)))

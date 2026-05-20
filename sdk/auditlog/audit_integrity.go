@@ -17,6 +17,8 @@ import (
 	"go.opentelemetry.io/otel/log"
 )
 
+const auditAttrSignContent = "sign_content"
+
 type canonicalAttribute struct {
 	Key   string `json:"key"`
 	Value string `json:"value"`
@@ -45,11 +47,7 @@ func signAuditRecordHMAC(record AuditRecord, key []byte, configuredHashAlgorithm
 		return AuditRecord{}, fmt.Errorf("hmac key is required for signing")
 	}
 	alg := resolveHashAlgorithm(record, configuredHashAlgorithm)
-	canonical, err := canonicalizeAuditRecord(record)
-	if err != nil {
-		return AuditRecord{}, err
-	}
-	hashHex, err := computeHashHex(alg, canonical)
+	payload, err := signingPayload(record)
 	if err != nil {
 		return AuditRecord{}, err
 	}
@@ -58,8 +56,8 @@ func signAuditRecordHMAC(record AuditRecord, key []byte, configuredHashAlgorithm
 		return AuditRecord{}, err
 	}
 	mac := hmac.New(h, key)
-	_, _ = mac.Write(canonical)
-	record.Hash = hashHex
+	_, _ = mac.Write(payload)
+	record.Hash = ""
 	record.HMAC = strings.ToLower(hex.EncodeToString(mac.Sum(nil)))
 	return record, nil
 }
@@ -70,18 +68,11 @@ func verifyAuditIntegrity(
 	signatureVerifier AuditSignatureVerifier,
 	configuredHashAlgorithm string,
 ) error {
-	canonical, err := canonicalizeAuditRecord(record)
+	payload, err := signingPayload(record)
 	if err != nil {
 		return err
 	}
 	alg := resolveHashAlgorithm(record, configuredHashAlgorithm)
-	expected, err := computeHashHex(alg, canonical)
-	if err != nil {
-		return newAuditStatusError(AuditErrorInvalidRequest, "invalid hash configuration", false, err)
-	}
-	if !strings.EqualFold(record.Hash, expected) {
-		return newAuditStatusError(AuditErrorInvalidRequest, "audit hash verification failed", false, nil)
-	}
 	if record.HMAC != "" {
 		if len(hmacKey) == 0 {
 			return newAuditStatusError(AuditErrorInvalidRequest, "audit hmac present but no verification key configured", false, nil)
@@ -91,7 +82,7 @@ func verifyAuditIntegrity(
 			return newAuditStatusError(AuditErrorInvalidRequest, "invalid hmac algorithm", false, err)
 		}
 		mac := hmac.New(h, hmacKey)
-		_, _ = mac.Write(canonical)
+		_, _ = mac.Write(payload)
 		macHex := hex.EncodeToString(mac.Sum(nil))
 		if !hmac.Equal([]byte(strings.ToLower(macHex)), []byte(strings.ToLower(record.HMAC))) {
 			return newAuditStatusError(AuditErrorInvalidRequest, "audit hmac verification failed", false, nil)
@@ -100,6 +91,10 @@ func verifyAuditIntegrity(
 	if record.Signature != "" {
 		if signatureVerifier == nil {
 			return newAuditStatusError(AuditErrorInvalidRequest, "audit signature present but no signature verifier configured", false, nil)
+		}
+		canonical, cerr := canonicalizeAuditRecord(record)
+		if cerr != nil {
+			return cerr
 		}
 		if err := signatureVerifier(record, canonical); err != nil {
 			return newAuditStatusError(AuditErrorInvalidRequest, "audit signature verification failed", false, err)
@@ -166,6 +161,34 @@ func hmacHasherForAlgorithm(algorithm string) (func() stdhash.Hash, error) {
 		return sha512.New, nil
 	default:
 		return nil, fmt.Errorf("unsupported hash algorithm for hmac: %s", algorithm)
+	}
+}
+
+func signContentMode(record AuditRecord) string {
+	if mode := strings.ToLower(strings.TrimSpace(record.SignContent)); mode != "" {
+		return mode
+	}
+	var mode string
+	record.WalkAttributes(func(kv log.KeyValue) bool {
+		if string(kv.Key) != auditAttrSignContent {
+			return true
+		}
+		if kv.Value.Kind() == log.KindString {
+			mode = strings.TrimSpace(kv.Value.AsString())
+		} else {
+			mode = strings.TrimSpace(kv.Value.String())
+		}
+		return false
+	})
+	return strings.ToLower(mode)
+}
+
+func signingPayload(record AuditRecord) ([]byte, error) {
+	switch signContentMode(record) {
+	case "body":
+		return []byte(record.Body().String()), nil
+	default:
+		return canonicalizeAuditRecord(record)
 	}
 }
 

@@ -53,11 +53,9 @@ const (
 	auditAttrOutcome       = "audit.outcome"
 	auditAttrSourceIP      = "audit.source_ip"
 	auditAttrRecordID      = "audit.record_id"
-	auditAttrHash          = "audit.hash"
 	auditAttrSignature     = "audit.signature"
 	auditAttrHMAC          = "audit.hmac"
 	auditAttrSchemaVersion = "audit.schema_version"
-	auditAttrHashAlgorithm = "audit.hash_algorithm"
 	auditAttrKeyID         = "audit.key_id"
 	auditAttrSequenceNo    = "audit.sequence_no"
 	auditAttrPrevHash      = "audit.prev_hash"
@@ -115,7 +113,7 @@ func (l *auditLogger) EmitWithResult(ctx context.Context, record AuditRecord) Au
 		return result
 	}
 	if len(l.provider.hmacVerificationKey) > 0 &&
-		record.Hash == "" && record.HMAC == "" && record.Signature == "" {
+		record.HMAC == "" && record.Signature == "" {
 		signed, err := signAuditRecordHMAC(record, l.provider.hmacVerificationKey, l.provider.hashAlgorithm)
 		if err != nil {
 			result.StatusCode, result.Status, result.Reason = mapAuditError(
@@ -124,7 +122,6 @@ func (l *auditLogger) EmitWithResult(ctx context.Context, record AuditRecord) Au
 			return result
 		}
 		record = signed
-		result.Hash = record.Hash
 	}
 	if err := validateRequiredAuditRecord(record); err != nil {
 		result.StatusCode, result.Status, result.Reason = mapAuditError(err)
@@ -150,7 +147,6 @@ func (l *auditLogger) EmitWithResult(ctx context.Context, record AuditRecord) Au
 		log.String(auditAttrAction, record.Action),
 		log.KeyValue{Key: auditAttrResource, Value: record.Resource},
 		log.String(auditAttrOutcome, record.Outcome),
-		log.String(auditAttrHash, record.Hash),
 		log.String(auditAttrSchemaVersion, record.SchemaVersion),
 	}
 	if !auditRecordIDAttrMatches(otelRecord, record.RecordID) {
@@ -166,9 +162,6 @@ func (l *auditLogger) EmitWithResult(ctx context.Context, record AuditRecord) Au
 	if record.HMAC != "" {
 		otelRecord.AddAttributes(log.String(auditAttrHMAC, record.HMAC))
 	}
-	if record.HashAlgorithm != "" {
-		otelRecord.AddAttributes(log.String(auditAttrHashAlgorithm, record.HashAlgorithm))
-	}
 	if record.KeyID != "" {
 		otelRecord.AddAttributes(log.String(auditAttrKeyID, record.KeyID))
 	}
@@ -177,6 +170,9 @@ func (l *auditLogger) EmitWithResult(ctx context.Context, record AuditRecord) Au
 	}
 	if record.PrevHash != "" {
 		otelRecord.AddAttributes(log.String(auditAttrPrevHash, record.PrevHash))
+	}
+	if mode := strings.TrimSpace(record.SignContent); mode != "" {
+		otelRecord.AddAttributes(log.String(auditAttrSignContent, mode))
 	}
 	queuedAt := time.Now().UTC()
 	for _, p := range l.provider.processors {
@@ -237,9 +233,6 @@ func validateRequiredAuditRecord(record AuditRecord) error {
 	}
 	if record.RecordID == "" {
 		return newAuditStatusError(AuditErrorInvalidRequest, "audit record_id is required", false, nil)
-	}
-	if record.Hash == "" {
-		return newAuditStatusError(AuditErrorInvalidRequest, "audit hash is required", false, nil)
 	}
 	if record.Signature == "" && record.HMAC == "" {
 		return newAuditStatusError(AuditErrorInvalidRequest, "audit signature or hmac is required", false, nil)
@@ -318,9 +311,9 @@ func WithAuditRecordProcessor(processor AuditRecordProcessor) AuditLoggerProvide
 }
 
 // WithAuditHMACVerificationKey configures the shared secret used to verify HMAC tags on
-// incoming audit records. When the key is non-empty and a record omits Hash, HMAC, and
-// Signature, the provider computes hash and HMAC from the canonical audit payload
-// before validation and processing (in-process signing for trusted emitters).
+// incoming audit records. When the key is non-empty and a record omits HMAC and
+// Signature, the provider computes HMAC from the canonical audit payload before
+// validation and processing (in-process signing for trusted emitters).
 func WithAuditHMACVerificationKey(key []byte) AuditLoggerProviderOption {
 	return auditLoggerProviderOptionFunc(func(cfg auditProviderConfig) auditProviderConfig {
 		if len(key) == 0 {
@@ -533,6 +526,7 @@ type AuditRecord struct {
 	Signature string
 	HMAC      string
 	SchemaVersion string
+	SignContent   string
 	HashAlgorithm string
 	KeyID string
 	SequenceNo int64

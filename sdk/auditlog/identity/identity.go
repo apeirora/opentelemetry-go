@@ -14,6 +14,7 @@ import (
 const (
 	attrRecordID = "audit.record_id"
 	attrHash     = "audit.hash"
+	attrHMAC     = "audit.hmac"
 )
 
 func GetRecordID(record *sdklog.Record) (string, error) {
@@ -50,17 +51,24 @@ func GetRecordHash(record *sdklog.Record) string {
 	if record == nil {
 		return ""
 	}
-	var hash string
+	if h := recordIntegrityAttr(record, attrHMAC); h != "" {
+		return h
+	}
+	return recordIntegrityAttr(record, attrHash)
+}
+
+func recordIntegrityAttr(record *sdklog.Record, key string) string {
+	var value string
 	record.WalkAttributes(func(kv log.KeyValue) bool {
-		if string(kv.Key) != attrHash {
+		if string(kv.Key) != key {
 			return true
 		}
 		if kv.Value.Kind() == log.KindString {
-			hash = strings.TrimSpace(kv.Value.AsString())
+			value = strings.TrimSpace(kv.Value.AsString())
 		} else {
-			hash = strings.TrimSpace(kv.Value.String())
+			value = strings.TrimSpace(kv.Value.String())
 		}
 		return false
 	})
-	return hash
+	return value
 }

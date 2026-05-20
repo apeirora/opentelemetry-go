@@ -48,8 +48,11 @@ func TestWithAuditHMACVerificationKeyFromEnvironment_Variable(t *testing.T) {
 	if res.StatusCode != 202 {
 		t.Fatalf("expected 202, got %d %s", res.StatusCode, res.Reason)
 	}
-	if res.Hash != wantSigned.Hash {
-		t.Fatalf("hash %q want %q", res.Hash, wantSigned.Hash)
+	if res.Hash != "" {
+		t.Fatalf("expected empty hash in result, got %q", res.Hash)
+	}
+	if wantSigned.HMAC == "" {
+		t.Fatal("expected hmac on signed record")
 	}
 }
 
@@ -93,8 +96,11 @@ func TestWithAuditHMACVerificationKeyFromEnvironment_File(t *testing.T) {
 	if res.StatusCode != 202 {
 		t.Fatalf("expected 202, got %d %s", res.StatusCode, res.Reason)
 	}
-	if res.Hash != wantSigned.Hash {
-		t.Fatalf("hash %q want %q", res.Hash, wantSigned.Hash)
+	if res.Hash != "" {
+		t.Fatalf("expected empty hash in result, got %q", res.Hash)
+	}
+	if wantSigned.HMAC == "" {
+		t.Fatal("expected hmac on signed record")
 	}
 }
 
@@ -163,7 +169,10 @@ func TestWithAuditHMACVerificationKeyFromEnvironment_UnsetNoOp(t *testing.T) {
 	if res.StatusCode != 202 {
 		t.Fatalf("expected 202, got %d %s", res.StatusCode, res.Reason)
 	}
-	if res.Hash != wantSigned.Hash {
-		t.Fatalf("hash %q want %q", res.Hash, wantSigned.Hash)
+	if res.Hash != "" {
+		t.Fatalf("expected empty hash in result, got %q", res.Hash)
+	}
+	if wantSigned.HMAC == "" {
+		t.Fatal("expected hmac on signed record")
 	}
 }
