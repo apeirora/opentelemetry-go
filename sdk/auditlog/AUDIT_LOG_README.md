@@ -17,6 +17,10 @@ It includes:
 - `sdk/auditlog/identity`: record identity helpers (`record_id`, hash)
 - `sdk/auditlog/status`: audit status/error mapping
 
+## OTLP HTTP export
+
+`Exporter` is whatever you provide; this package does not configure OTLP endpoints. The standard `otlploghttp` client defaults to URL path `/v1/logs`. Collectors that ingest audit logs on `/auditlogs` need `otlploghttp.WithURLPath("/auditlogs")` or a URL whose path is `/auditlogs`. The runnable demo under `sdk/auditlog/testapp` sets `/auditlogs` when `-otlp-endpoint` has no path (for example `http://localhost:4318`).
+
 ## Core Types
 
 ### `AuditLogStore`
@@ -227,8 +231,7 @@ record := AuditRecord{
 	Resource: log.StringValue("session"),
 	Outcome: "success",
 	RecordID: "evt-001",
-	Hash: "<canonical-hash>",
-	Signature: "<signature>",
+	HMAC: "<hmac-hex>",
 	SchemaVersion: "1.0",
 }
 record.SetTimestamp(time.Now())
