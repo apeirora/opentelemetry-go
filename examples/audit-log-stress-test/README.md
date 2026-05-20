@@ -17,7 +17,7 @@ This example demonstrates stress testing the OpenTelemetry Audit Log processor b
 
 ## Prerequisites
 
-1. **OTEL Collector** running on `http://localhost:4318`
+1. **OTEL Collector** with OTLP HTTP on port `4318` and audit logs ingested at path `/auditlogs` (example base URL `http://localhost:4318`)
    
    Quick start with Docker:
    ```bash
@@ -53,7 +53,7 @@ go run . \
   -logs 2000000 \
   -batch 20000 \
   -report 200000 \
-  -endpoint http://localhost:4318 \
+  -endpoint http://localhost:4318/auditlogs \
   -delay 50ms \
   -export-batch 2000
 ```
@@ -117,7 +117,7 @@ go run . \
 | `-logs` | 1,000,000 | Total number of logs to send |
 | `-batch` | 10,000 | Batch size for logical grouping |
 | `-report` | 100,000 | Progress report interval |
-| `-endpoint` | http://localhost:4318 | OTLP endpoint URL |
+| `-endpoint` | http://localhost:4318/auditlogs | OTLP HTTP URL for audit logs (collector `/auditlogs` path) |
 | `-delay` | 100ms | Schedule delay between exports |
 | `-export-batch` | 1000 | Maximum export batch size |
 | `-uuid` | auto | Custom test run UUID |
@@ -146,7 +146,7 @@ Configuration:
   Batch Size:        10000
   Report Interval:   100000
   Test Run UUID:     1728582400-1234-5678-9012-123456789012
-  OTLP Endpoint:     http://localhost:4318
+  OTLP Endpoint:     http://localhost:4318/auditlogs
   Schedule Delay:    100ms
   Max Export Batch:  1000
 

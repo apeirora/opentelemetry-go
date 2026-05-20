@@ -53,7 +53,7 @@ func main() {
     ctx := context.Background()
     
     // Create exporter
-    exporter, _ := sdklog.NewOTLPExporter("http://localhost:4318")
+    exporter, _ := sdklog.NewOTLPExporter("http://localhost:4318/auditlogs")
     
     // Create processor with storage - ONE LINE!
     processor, _ := sdklog.NewAuditLogProcessorWithStorage(exporter).

@@ -14,7 +14,7 @@ func main() {
 	totalLogs := flag.Int("logs", 1_000_000, "Total number of logs to send")
 	batchSize := flag.Int("batch", 10_000, "Batch size for grouping")
 	reportInterval := flag.Int("report", 100_000, "Progress report interval")
-	endpoint := flag.String("endpoint", "http://localhost:4318", "OTLP endpoint URL")
+	endpoint := flag.String("endpoint", "http://localhost:4318/auditlogs", "OTLP HTTP URL for audit logs (collector auditlogs receiver path)")
 	scheduleDelay := flag.Duration("delay", 100*time.Millisecond, "Schedule delay between exports")
 	maxExportBatch := flag.Int("export-batch", 1000, "Maximum export batch size")
 	testUUID := flag.String("uuid", "", "Test run UUID (auto-generated if not provided)")

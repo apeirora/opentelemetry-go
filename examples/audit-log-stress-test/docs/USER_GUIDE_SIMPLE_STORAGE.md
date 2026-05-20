@@ -78,7 +78,7 @@ func main() {
     ctx := context.Background()
     
     // Create your exporter
-    exporter, _ := sdklog.NewOTLPExporter("http://localhost:4318")
+    exporter, _ := sdklog.NewOTLPExporter("http://localhost:4318/auditlogs")
     
     // Build processor with storage - ONE STEP!
     processor, err := sdklog.NewAuditLogProcessorWithStorage(exporter).

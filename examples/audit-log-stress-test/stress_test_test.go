@@ -19,7 +19,7 @@ func TestStressTest(t *testing.T) {
 		TotalLogs:      1_000_000,
 		BatchSize:      10_000,
 		ReportInterval: 100_000,
-		Endpoint:       "http://localhost:4318",
+		Endpoint:       "http://localhost:4318/auditlogs",
 	}
 
 	if err := log.RunStressTest(config); err != nil {

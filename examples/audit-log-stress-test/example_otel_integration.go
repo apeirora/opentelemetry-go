@@ -18,7 +18,7 @@ import (
 )
 
 func RunOTELIntegrationExample() {
-	RunOTELIntegrationExampleWithEndpoint("http://localhost:4318")
+	RunOTELIntegrationExampleWithEndpoint("http://localhost:4318/auditlogs")
 }
 
 func RunOTELIntegrationExampleWithEndpoint(endpoint string) error {
@@ -187,11 +187,11 @@ func NewOTLPExporter(endpoint string) (*OTLPExporter, error) {
 	fmt.Printf("   Connecting to OTLP endpoint: %s\n", endpoint)
 
 	logsURL := endpoint
-	if !strings.HasSuffix(logsURL, "/v1/logs") {
+	if !strings.HasSuffix(logsURL, "/auditlogs") {
 		if strings.HasSuffix(logsURL, "/") {
-			logsURL = logsURL + "v1/logs"
+			logsURL = logsURL + "auditlogs"
 		} else {
-			logsURL = logsURL + "/v1/logs"
+			logsURL = logsURL + "/auditlogs"
 		}
 	}
 
