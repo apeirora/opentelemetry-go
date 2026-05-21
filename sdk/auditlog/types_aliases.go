@@ -1,7 +1,7 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
-package log
+package auditlog
 
 import sdklog "go.opentelemetry.io/otel/sdk/log"
 
