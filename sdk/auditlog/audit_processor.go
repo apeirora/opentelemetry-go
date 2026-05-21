@@ -13,6 +13,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/log"
 )
 
@@ -41,7 +42,7 @@ type AuditExceptionHandler interface {
 type DefaultAuditExceptionHandler struct{}
 
 func (h *DefaultAuditExceptionHandler) Handle(exception *AuditException) {
-	fmt.Printf("AuditException: %s\n", exception.Error())
+	otel.Handle(exception)
 }
 
 type RetryPolicy struct {
@@ -237,16 +238,7 @@ func (p *AuditLogProcessor) loadExistingRecords() error {
 		}
 	}
 
-	go func() {
-		if err := p.exportLogs(false); err != nil {
-			p.config.ExceptionHandler.Handle(&AuditException{
-				Message:    "Failed to export loaded audit records from store",
-				Cause:      err,
-				Context:    context.Background(),
-				LogRecords: nil,
-			})
-		}
-	}()
+	p.runAsyncExport(func() error { return p.exportLogs(false) }, "Failed to export loaded audit records from store", context.Background(), nil)
 
 	return nil
 }
@@ -291,16 +283,7 @@ func (p *AuditLogProcessor) loadExistingRecordsBatched(peeker interface {
 			fmt.Printf("audit replay: batch delivered+removed len=%d total_replayed=%d\n", len(records), totalReplayed)
 		}
 	}
-	go func() {
-		if err := p.exportLogs(false); err != nil {
-			p.config.ExceptionHandler.Handle(&AuditException{
-				Message:    "Failed to export loaded audit records from store",
-				Cause:      err,
-				Context:    context.Background(),
-				LogRecords: nil,
-			})
-		}
-	}()
+	p.runAsyncExport(func() error { return p.exportLogs(false) }, "Failed to export loaded audit records from store", context.Background(), nil)
 	return nil
 }
 
@@ -335,17 +318,23 @@ func (p *AuditLogProcessor) loadExistingRecordsStreaming(walker interface {
 			stopReplay = true
 		}
 	}
+	p.runAsyncExport(func() error { return p.exportLogs(false) }, "Failed to export loaded audit records from store", context.Background(), nil)
+	return nil
+}
+
+func (p *AuditLogProcessor) runAsyncExport(export func() error, message string, ctx context.Context, records []Record) {
+	p.wg.Add(1)
 	go func() {
-		if err := p.exportLogs(false); err != nil {
+		defer p.wg.Done()
+		if err := export(); err != nil {
 			p.config.ExceptionHandler.Handle(&AuditException{
-				Message:    "Failed to export loaded audit records from store",
+				Message:    message,
 				Cause:      err,
-				Context:    context.Background(),
-				LogRecords: nil,
+				Context:    ctx,
+				LogRecords: records,
 			})
 		}
 	}()
-	return nil
 }
 
 func (p *AuditLogProcessor) enqueueLoadedRecord(record Record) error {
@@ -460,16 +449,12 @@ func (p *AuditLogProcessor) OnEmit(ctx context.Context, record *Record) error {
 	p.queueMutex.Unlock()
 
 	if queueSize >= p.config.MaxExportBatchSize {
-		go func() {
-			if err := p.exportLogs(false); err != nil {
-				p.config.ExceptionHandler.Handle(&AuditException{
-					Message:    "Audit export failed after queue reached batch size",
-					Cause:      err,
-					Context:    ctx,
-					LogRecords: nil,
-				})
-			}
-		}()
+		p.runAsyncExport(
+			func() error { return p.exportLogs(false) },
+			"Audit export failed after queue reached batch size",
+			ctx,
+			nil,
+		)
 	}
 
 	return nil
@@ -546,10 +531,12 @@ func (p *AuditLogProcessor) removeExportedRecordsFromStore(ctx context.Context, 
 	var removeErr error
 	for attempt := 0; attempt < 5; attempt++ {
 		if attempt > 0 {
+			timer := time.NewTimer(50 * time.Millisecond)
 			select {
 			case <-ctx.Done():
+				timer.Stop()
 				return ctx.Err()
-			case <-time.After(50 * time.Millisecond):
+			case <-timer.C:
 			}
 		}
 		removeErr = p.config.AuditLogStore.RemoveAll(ctx, records)
@@ -629,6 +616,9 @@ func (p *AuditLogProcessor) ForceFlush(ctx context.Context) error {
 		return nil
 	}
 
+	flushWait := time.NewTimer(10 * time.Millisecond)
+	defer flushWait.Stop()
+
 	for {
 		p.queueMutex.Lock()
 		queueLen := p.queue.Len()
@@ -653,8 +643,15 @@ func (p *AuditLogProcessor) ForceFlush(ctx context.Context) error {
 			return exportErr
 		}
 
+		if !flushWait.Stop() {
+			select {
+			case <-flushWait.C:
+			default:
+			}
+		}
+		flushWait.Reset(10 * time.Millisecond)
 		select {
-		case <-time.After(10 * time.Millisecond):
+		case <-flushWait.C:
 		case <-ctx.Done():
 			return ctx.Err()
 		}

@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"go.opentelemetry.io/otel/log"
+	"golang.org/x/time/rate"
 )
 
 type AuditEnabledParameters struct {
@@ -268,9 +269,7 @@ type AuditLoggerProvider struct {
 	maxBodyBytes         int
 	maxAttributeCount    int
 	maxRequestsPerSecond int
-	rateMu               sync.Mutex
-	rateWindowStart      time.Time
-	rateCount            int
+	rateLimiter          *rate.Limiter
 	loggersMu            sync.Mutex
 	loggers              map[auditLoggerKey]*auditLogger
 	stopped              atomic.Bool
@@ -377,17 +376,22 @@ func NewAuditLoggerProvider(opts ...AuditLoggerProviderOption) *AuditLoggerProvi
 	for _, opt := range opts {
 		cfg = opt.apply(cfg)
 	}
-	return &AuditLoggerProvider{
-		processors:          cfg.processors,
-		hmacVerificationKey: cfg.hmacVerificationKey,
-		signatureVerifier:   cfg.signatureVerifier,
-		hashAlgorithm:       cfg.hashAlgorithm,
-		authorizer:          cfg.authorizer,
-		maxBodyBytes:        cfg.maxBodyBytes,
-		maxAttributeCount:   cfg.maxAttributeCount,
+	p := &AuditLoggerProvider{
+		processors:           cfg.processors,
+		hmacVerificationKey:  cfg.hmacVerificationKey,
+		signatureVerifier:    cfg.signatureVerifier,
+		hashAlgorithm:        cfg.hashAlgorithm,
+		authorizer:           cfg.authorizer,
+		maxBodyBytes:         cfg.maxBodyBytes,
+		maxAttributeCount:    cfg.maxAttributeCount,
 		maxRequestsPerSecond: cfg.maxRequestsPerSecond,
-		loggers:             make(map[auditLoggerKey]*auditLogger),
+		loggers:              make(map[auditLoggerKey]*auditLogger),
 	}
+	if cfg.maxRequestsPerSecond > 0 {
+		lim := rate.Limit(cfg.maxRequestsPerSecond)
+		p.rateLimiter = rate.NewLimiter(lim, cfg.maxRequestsPerSecond)
+	}
+	return p
 }
 
 type AuditLoggerOption interface {
@@ -488,19 +492,8 @@ func (p *AuditLoggerProvider) evaluatePolicies(ctx context.Context, record Audit
 	if p.maxAttributeCount > 0 && record.AttributesLen() > p.maxAttributeCount {
 		return newAuditStatusError(AuditErrorPayloadTooLarge, "audit attributes exceed count limit", false, nil)
 	}
-	if p.maxRequestsPerSecond > 0 {
-		p.rateMu.Lock()
-		now := time.Now()
-		if p.rateWindowStart.IsZero() || now.Sub(p.rateWindowStart) >= time.Second {
-			p.rateWindowStart = now
-			p.rateCount = 0
-		}
-		p.rateCount++
-		allowed := p.rateCount <= p.maxRequestsPerSecond
-		p.rateMu.Unlock()
-		if !allowed {
-			return newAuditStatusError(AuditErrorTooManyRequests, "audit rate limit exceeded", true, nil)
-		}
+	if p.rateLimiter != nil && !p.rateLimiter.Allow() {
+		return newAuditStatusError(AuditErrorTooManyRequests, "audit rate limit exceeded", true, nil)
 	}
 	return nil
 }

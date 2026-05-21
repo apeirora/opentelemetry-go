@@ -104,19 +104,16 @@ func TestWithAuditHMACVerificationKeyFromEnvironment_File(t *testing.T) {
 	}
 }
 
-func TestWithAuditHMACVerificationKeyFromEnvironment_FileReadErrorPanics(t *testing.T) {
+func TestHMACVerificationKeyFromEnvironment_FileReadError(t *testing.T) {
 	t.Setenv(EnvAuditlogHMACKeyFile, filepath.Join(t.TempDir(), "missing"))
 	t.Setenv(EnvAuditlogHMACKey, "")
 
-	defer func() {
-		if recover() == nil {
-			t.Fatal("expected panic")
-		}
-	}()
-	NewAuditLoggerProvider(WithAuditHMACVerificationKeyFromEnvironment())
+	if _, err := HMACVerificationKeyFromEnvironment(); err == nil {
+		t.Fatal("expected error for missing key file")
+	}
 }
 
-func TestWithAuditHMACVerificationKeyFromEnvironment_FileEmptyPanics(t *testing.T) {
+func TestHMACVerificationKeyFromEnvironment_FileEmpty(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "empty.txt")
 	if err := os.WriteFile(path, []byte("  \n  "), 0o600); err != nil {
@@ -125,12 +122,9 @@ func TestWithAuditHMACVerificationKeyFromEnvironment_FileEmptyPanics(t *testing.
 	t.Setenv(EnvAuditlogHMACKeyFile, path)
 	t.Setenv(EnvAuditlogHMACKey, "")
 
-	defer func() {
-		if recover() == nil {
-			t.Fatal("expected panic")
-		}
-	}()
-	NewAuditLoggerProvider(WithAuditHMACVerificationKeyFromEnvironment())
+	if _, err := HMACVerificationKeyFromEnvironment(); err == nil {
+		t.Fatal("expected error for empty key file")
+	}
 }
 
 func TestWithAuditHMACVerificationKeyFromEnvironment_UnsetNoOp(t *testing.T) {

@@ -4,13 +4,12 @@
 package recordcodec
 
 import (
-	"reflect"
 	"strconv"
 	"time"
-	"unsafe"
 
 	"go.opentelemetry.io/otel/log"
 	sdklog "go.opentelemetry.io/otel/sdk/log"
+	sdklogtest "go.opentelemetry.io/otel/sdk/log/logtest"
 	"go.opentelemetry.io/otel/trace"
 )
 
@@ -68,35 +67,7 @@ func Serialize(record *sdklog.Record) Data {
 }
 
 func Deserialize(data Data) sdklog.Record {
-	record := sdklog.Record{}
-	setUnlimitedAttributeLimits(&record)
-	record.SetTimestamp(data.Timestamp)
-	record.SetObservedTimestamp(data.ObservedTimestamp)
-	record.SetEventName(data.EventName)
-	record.SetSeverity(log.Severity(data.Severity))
-	record.SetSeverityText(data.SeverityText)
-	switch log.Kind(data.BodyKind) {
-	case log.KindInt64:
-		if v, err := strconv.ParseInt(data.Body, 10, 64); err == nil {
-			record.SetBody(log.Int64Value(v))
-		} else {
-			record.SetBody(log.StringValue(data.Body))
-		}
-	case log.KindFloat64:
-		if v, err := strconv.ParseFloat(data.Body, 64); err == nil {
-			record.SetBody(log.Float64Value(v))
-		} else {
-			record.SetBody(log.StringValue(data.Body))
-		}
-	case log.KindBool:
-		if v, err := strconv.ParseBool(data.Body); err == nil {
-			record.SetBody(log.BoolValue(v))
-		} else {
-			record.SetBody(log.StringValue(data.Body))
-		}
-	default:
-		record.SetBody(log.StringValue(data.Body))
-	}
+	attrs := make([]log.KeyValue, 0, len(data.Attributes))
 	for _, attr := range data.Attributes {
 		var value log.Value
 		switch log.Kind(attr.Kind) {
@@ -123,25 +94,46 @@ func Deserialize(data Data) sdklog.Record {
 		default:
 			value = log.StringValue(attr.Value)
 		}
-		record.AddAttributes(log.KeyValue{Key: attr.Key, Value: value})
+		attrs = append(attrs, log.KeyValue{Key: attr.Key, Value: value})
 	}
+
 	var traceID trace.TraceID
 	var spanID trace.SpanID
 	copy(traceID[:], data.TraceID)
 	copy(spanID[:], data.SpanID)
-	record.SetTraceID(traceID)
-	record.SetSpanID(spanID)
-	record.SetTraceFlags(trace.TraceFlags(data.TraceFlags))
-	return record
+
+	body := decodeBody(data.Body, log.Kind(data.BodyKind))
+
+	return sdklogtest.RecordFactory{
+		AttributeCountLimit:       -1,
+		AttributeValueLengthLimit: -1,
+		Timestamp:                 data.Timestamp,
+		ObservedTimestamp:         data.ObservedTimestamp,
+		EventName:                 data.EventName,
+		Severity:                  log.Severity(data.Severity),
+		SeverityText:              data.SeverityText,
+		Body:                      body,
+		Attributes:                attrs,
+		TraceID:                   traceID,
+		SpanID:                    spanID,
+		TraceFlags:                trace.TraceFlags(data.TraceFlags),
+	}.NewRecord()
 }
 
-func setUnlimitedAttributeLimits(r *sdklog.Record) {
-	rVal := reflect.ValueOf(r).Elem()
-	setLimit := func(name string, v int) {
-		rf := rVal.FieldByName(name)
-		rf = reflect.NewAt(rf.Type(), unsafe.Pointer(rf.UnsafeAddr())).Elem() //nolint:gosec // uintptr -> unsafe.Pointer; mirrors sdk/log/logtest.
-		rf.Set(reflect.ValueOf(v))
+func decodeBody(body string, kind log.Kind) log.Value {
+	switch kind {
+	case log.KindInt64:
+		if v, err := strconv.ParseInt(body, 10, 64); err == nil {
+			return log.Int64Value(v)
+		}
+	case log.KindFloat64:
+		if v, err := strconv.ParseFloat(body, 64); err == nil {
+			return log.Float64Value(v)
+		}
+	case log.KindBool:
+		if v, err := strconv.ParseBool(body); err == nil {
+			return log.BoolValue(v)
+		}
 	}
-	setLimit("attributeCountLimit", -1)
-	setLimit("attributeValueLengthLimit", -1)
+	return log.StringValue(body)
 }

@@ -20,30 +20,40 @@ const (
 	EnvAuditlogHMACKey = "OTEL_AUDITLOG_HMAC_KEY"
 )
 
+// HMACVerificationKeyFromEnvironment loads the HMAC verification key from the process environment.
+// If [EnvAuditlogHMACKeyFile] is set to a non-empty path, the key is read from that file; otherwise,
+// if [EnvAuditlogHMACKey] is non-empty after trimming, that value is used. If neither yields a key,
+// it returns nil, nil.
+func HMACVerificationKeyFromEnvironment() ([]byte, error) {
+	path := strings.TrimSpace(os.Getenv(EnvAuditlogHMACKeyFile))
+	if path != "" {
+		b, err := os.ReadFile(path)
+		if err != nil {
+			return nil, fmt.Errorf("auditlog: read %s (%q): %w", EnvAuditlogHMACKeyFile, path, err)
+		}
+		key := strings.TrimSpace(string(b))
+		if key == "" {
+			return nil, fmt.Errorf("auditlog: %s file %q is empty after trim", EnvAuditlogHMACKeyFile, path)
+		}
+		return []byte(key), nil
+	}
+	keyStr := strings.TrimSpace(os.Getenv(EnvAuditlogHMACKey))
+	if keyStr != "" {
+		return []byte(keyStr), nil
+	}
+	return nil, nil
+}
+
 // WithAuditHMACVerificationKeyFromEnvironment configures the HMAC verification key from the
-// process environment. If [EnvAuditlogHMACKeyFile] is set to a non-empty path, the key is read
-// from that file; otherwise, if [EnvAuditlogHMACKey] is non-empty after trimming, that value
-// is used. If neither yields a key, this option leaves any key from other options unchanged.
-//
-// Reading the key file or finding an empty file after trim causes a panic with a descriptive message.
+// process environment when [HMACVerificationKeyFromEnvironment] succeeds. On failure or when no
+// key is configured, this option is a no-op; use [HMACVerificationKeyFromEnvironment] directly
+// when load errors must be handled explicitly.
 func WithAuditHMACVerificationKeyFromEnvironment() AuditLoggerProviderOption {
-	return auditLoggerProviderOptionFunc(func(cfg auditProviderConfig) auditProviderConfig {
-		path := strings.TrimSpace(os.Getenv(EnvAuditlogHMACKeyFile))
-		if path != "" {
-			b, err := os.ReadFile(path)
-			if err != nil {
-				panic(fmt.Sprintf("auditlog: read %s (%q): %v", EnvAuditlogHMACKeyFile, path, err))
-			}
-			key := strings.TrimSpace(string(b))
-			if key == "" {
-				panic(fmt.Sprintf("auditlog: %s file %q is empty after trim", EnvAuditlogHMACKeyFile, path))
-			}
-			return WithAuditHMACVerificationKey([]byte(key)).apply(cfg)
-		}
-		keyStr := strings.TrimSpace(os.Getenv(EnvAuditlogHMACKey))
-		if keyStr != "" {
-			return WithAuditHMACVerificationKey([]byte(keyStr)).apply(cfg)
-		}
-		return cfg
-	})
+	key, err := HMACVerificationKeyFromEnvironment()
+	if err != nil || len(key) == 0 {
+		return auditLoggerProviderOptionFunc(func(cfg auditProviderConfig) auditProviderConfig {
+			return cfg
+		})
+	}
+	return WithAuditHMACVerificationKey(key)
 }
