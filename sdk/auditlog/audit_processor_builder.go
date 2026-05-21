@@ -15,12 +15,12 @@ type AuditLogProcessorBuilder struct {
 	extension     StorageExtension
 }
 
-func NewAuditLogProcessorBuilder(exporter Exporter, store AuditLogStore) *AuditLogProcessorBuilder {
+func NewAuditLogProcessorBuilder(exporter Exporter, store AuditLogStore) (*AuditLogProcessorBuilder, error) {
 	if exporter == nil {
-		panic("exporter cannot be nil")
+		return nil, fmt.Errorf("exporter cannot be nil")
 	}
 	if store == nil {
-		panic("store cannot be nil")
+		return nil, fmt.Errorf("store cannot be nil")
 	}
 
 	return &AuditLogProcessorBuilder{
@@ -36,12 +36,12 @@ func NewAuditLogProcessorBuilder(exporter Exporter, store AuditLogStore) *AuditL
 			DeliveryMode:       AuditDeliveryModeAsyncStoreRetry,
 			StorageWriteMode:   AuditStorageWriteAlways,
 		},
-	}
+	}, nil
 }
 
-func NewAuditLogProcessorWithStorage(exporter Exporter) *AuditLogProcessorBuilder {
+func NewAuditLogProcessorWithStorage(exporter Exporter) (*AuditLogProcessorBuilder, error) {
 	if exporter == nil {
-		panic("exporter cannot be nil")
+		return nil, fmt.Errorf("exporter cannot be nil")
 	}
 
 	return &AuditLogProcessorBuilder{
@@ -56,51 +56,32 @@ func NewAuditLogProcessorWithStorage(exporter Exporter) *AuditLogProcessorBuilde
 			DeliveryMode:       AuditDeliveryModeAsyncStoreRetry,
 			StorageWriteMode:   AuditStorageWriteAlways,
 		},
-	}
+	}, nil
 }
 
 func (b *AuditLogProcessorBuilder) SetExceptionHandler(handler AuditExceptionHandler) *AuditLogProcessorBuilder {
-	if handler == nil {
-		panic("exception handler cannot be nil")
+	if handler != nil {
+		b.config.ExceptionHandler = handler
 	}
-	b.config.ExceptionHandler = handler
 	return b
 }
 
 func (b *AuditLogProcessorBuilder) SetScheduleDelay(delay time.Duration) *AuditLogProcessorBuilder {
-	if delay < 0 {
-		panic("schedule delay must be non-negative")
-	}
 	b.config.ScheduleDelay = delay
 	return b
 }
 
 func (b *AuditLogProcessorBuilder) SetMaxExportBatchSize(size int) *AuditLogProcessorBuilder {
-	if size <= 0 {
-		panic("max export batch size must be positive")
-	}
 	b.config.MaxExportBatchSize = size
 	return b
 }
 
 func (b *AuditLogProcessorBuilder) SetExporterTimeout(timeout time.Duration) *AuditLogProcessorBuilder {
-	if timeout < 0 {
-		panic("exporter timeout must be non-negative")
-	}
 	b.config.ExporterTimeout = timeout
 	return b
 }
 
 func (b *AuditLogProcessorBuilder) SetRetryPolicy(policy RetryPolicy) *AuditLogProcessorBuilder {
-	if policy.InitialBackoff < 0 {
-		panic("retry policy initial backoff must be non-negative")
-	}
-	if policy.MaxBackoff < 0 {
-		panic("retry policy max backoff must be non-negative")
-	}
-	if policy.BackoffMultiplier <= 0 {
-		panic("retry policy backoff multiplier must be positive")
-	}
 	b.config.RetryPolicy = policy
 	return b
 }
@@ -111,22 +92,20 @@ func (b *AuditLogProcessorBuilder) SetWaitOnExport(wait bool) *AuditLogProcessor
 }
 
 func (b *AuditLogProcessorBuilder) SetDeliveryMode(mode AuditDeliveryMode) *AuditLogProcessorBuilder {
-	if mode != AuditDeliveryModeAsyncStoreRetry && mode != AuditDeliveryModeSyncDirect {
-		panic("delivery mode must be async_store_retry or sync_direct")
-	}
 	b.config.DeliveryMode = mode
 	return b
 }
 
 func (b *AuditLogProcessorBuilder) SetStorageWriteMode(mode AuditStorageWriteMode) *AuditLogProcessorBuilder {
-	if mode != AuditStorageWriteAlways && mode != AuditStorageWriteOnError {
-		panic("storage write mode must be always or on_error")
-	}
 	b.config.StorageWriteMode = mode
 	return b
 }
 
 func (b *AuditLogProcessorBuilder) Build() (*AuditLogProcessor, error) {
+	if err := b.ValidateConfig(); err != nil {
+		return nil, err
+	}
+
 	ctx := context.Background()
 
 	if b.config.DeliveryMode == AuditDeliveryModeAsyncStoreRetry && b.config.AuditLogStore == nil && b.storageConfig != nil {
@@ -173,14 +152,6 @@ func (b *AuditLogProcessorBuilder) Build() (*AuditLogProcessor, error) {
 	return processor, nil
 }
 
-func (b *AuditLogProcessorBuilder) BuildOrPanic() *AuditLogProcessor {
-	processor, err := b.Build()
-	if err != nil {
-		panic(fmt.Sprintf("failed to create audit log processor: %v", err))
-	}
-	return processor
-}
-
 func (b *AuditLogProcessorBuilder) GetConfig() AuditLogProcessorConfig {
 	return b.config
 }
@@ -189,7 +160,10 @@ func (b *AuditLogProcessorBuilder) ValidateConfig() error {
 	if b.config.Exporter == nil {
 		return fmt.Errorf("exporter is required")
 	}
-	if b.config.DeliveryMode == AuditDeliveryModeAsyncStoreRetry && b.config.AuditLogStore == nil {
+	if b.config.DeliveryMode != AuditDeliveryModeAsyncStoreRetry && b.config.DeliveryMode != AuditDeliveryModeSyncDirect {
+		return fmt.Errorf("delivery mode must be async_store_retry or sync_direct")
+	}
+	if b.config.DeliveryMode == AuditDeliveryModeAsyncStoreRetry && b.config.AuditLogStore == nil && b.storageConfig == nil {
 		return fmt.Errorf("audit log store is required")
 	}
 	if b.config.ExceptionHandler == nil {

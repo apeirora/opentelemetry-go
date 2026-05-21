@@ -146,7 +146,12 @@ func main() {
 		}
 	}
 
-	processor, err := auditlog.NewAuditLogProcessorBuilder(exporter, store).
+	builder, err := auditlog.NewAuditLogProcessorBuilder(exporter, store)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "processor builder: %v\n", err)
+		os.Exit(1)
+	}
+	processor, err := builder.
 		SetWaitOnExport(true).
 		SetScheduleDelay(200 * time.Millisecond).
 		SetMaxExportBatchSize(32).

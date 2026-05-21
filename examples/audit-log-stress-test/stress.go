@@ -91,7 +91,12 @@ func RunStressTest(config *StressTestConfig) error {
 
 	fmt.Println()
 	fmt.Println("Step 2: Creating Audit Processor with Storage")
-	processor, err := createProcessorBuilder(config, otlpExporter).
+	builder, err := createProcessorBuilder(config, otlpExporter)
+	if err != nil {
+		fmt.Printf("❌ Failed to create processor builder: %v\n", err)
+		return err
+	}
+	processor, err := builder.
 		SetScheduleDelay(config.ScheduleDelay).
 		SetMaxExportBatchSize(config.MaxExportBatch).
 		SetExporterTimeout(config.ExporterTimeout).
@@ -266,8 +271,11 @@ func RunMegaStressTestWithStorage(storageType StorageType, storagePath, redisEnd
 	return RunStressTest(config)
 }
 
-func createProcessorBuilder(config *StressTestConfig, exporter sdklog.Exporter) *sdklog.AuditLogProcessorBuilder {
-	builder := sdklog.NewAuditLogProcessorWithStorage(exporter)
+func createProcessorBuilder(config *StressTestConfig, exporter sdklog.Exporter) (*sdklog.AuditLogProcessorBuilder, error) {
+	builder, err := sdklog.NewAuditLogProcessorWithStorage(exporter)
+	if err != nil {
+		return nil, err
+	}
 
 	switch config.StorageType {
 	case StorageTypeInMemory:
@@ -315,7 +323,7 @@ func createProcessorBuilder(config *StressTestConfig, exporter sdklog.Exporter) 
 		)
 	}
 
-	return builder
+	return builder, nil
 }
 
 func generateUUID() string {

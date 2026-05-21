@@ -46,7 +46,12 @@ func RunOTELIntegrationExampleWithEndpoint(endpoint string) error {
 
 	fmt.Println()
 	fmt.Println("Step 3: Create Audit Log Processor with OTLP Exporter")
-	processor, err := sdklog.NewAuditLogProcessorBuilder(otlpExporter, store).
+	builder, err := sdklog.NewAuditLogProcessorBuilder(otlpExporter, store)
+	if err != nil {
+		fmt.Printf("❌ Failed to create processor builder: %v\n", err)
+		return err
+	}
+	processor, err := builder.
 		SetScheduleDelay(1 * time.Second).
 		SetMaxExportBatchSize(100).
 		SetExporterTimeout(30 * time.Second).

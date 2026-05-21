@@ -27,7 +27,12 @@ func ExampleUsage() {
 	exceptionHandler := &ExampleExceptionHandler{}
 	fmt.Println("✅ Created custom exception handler")
 
-	processor, err := NewAuditLogProcessorBuilder(exporter, store).
+	builder, err := NewAuditLogProcessorBuilder(exporter, store)
+	if err != nil {
+		fmt.Printf("Failed to create audit log processor builder: %v\n", err)
+		return
+	}
+	processor, err := builder.
 		SetScheduleDelay(2 * time.Second).
 		SetMaxExportBatchSize(5).
 		SetExporterTimeout(10 * time.Second).

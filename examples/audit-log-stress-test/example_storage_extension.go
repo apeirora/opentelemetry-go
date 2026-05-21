@@ -24,7 +24,11 @@ func ExampleAuditLogStorageExtension() {
 
 	exporter := &ConsoleExporter{}
 
-	processor, err := sdklog.NewAuditLogProcessorBuilder(exporter, storageAdapter).
+	builder, err := sdklog.NewAuditLogProcessorBuilder(exporter, storageAdapter)
+	if err != nil {
+		panic(fmt.Sprintf("processor builder: %v", err))
+	}
+	processor, err := builder.
 		SetScheduleDelay(1 * time.Second).
 		SetMaxExportBatchSize(100).
 		SetExporterTimeout(30 * time.Second).
@@ -72,7 +76,11 @@ func ExampleRedisStorageExtension() {
 
 	exporter := &ConsoleExporter{}
 
-	processor, err := sdklog.NewAuditLogProcessorBuilder(exporter, storageAdapter).
+	builder, err := sdklog.NewAuditLogProcessorBuilder(exporter, storageAdapter)
+	if err != nil {
+		panic(fmt.Sprintf("processor builder: %v", err))
+	}
+	processor, err := builder.
 		SetScheduleDelay(1 * time.Second).
 		SetMaxExportBatchSize(100).
 		Build()
@@ -117,7 +125,11 @@ func ExampleSQLStorageExtension() {
 
 	exporter := &ConsoleExporter{}
 
-	processor, err := sdklog.NewAuditLogProcessorBuilder(exporter, storageAdapter).
+	builder, err := sdklog.NewAuditLogProcessorBuilder(exporter, storageAdapter)
+	if err != nil {
+		panic(fmt.Sprintf("processor builder: %v", err))
+	}
+	processor, err := builder.
 		SetScheduleDelay(1 * time.Second).
 		SetMaxExportBatchSize(100).
 		SetExporterTimeout(30 * time.Second).
@@ -176,7 +188,11 @@ func ExampleCustomStorageClient() {
 
 	exporter := &ConsoleExporter{}
 
-	processor, err := sdklog.NewAuditLogProcessorBuilder(exporter, storageAdapter).
+	builder, err := sdklog.NewAuditLogProcessorBuilder(exporter, storageAdapter)
+	if err != nil {
+		panic(fmt.Sprintf("processor builder: %v", err))
+	}
+	processor, err := builder.
 		SetScheduleDelay(500 * time.Millisecond).
 		SetMaxExportBatchSize(50).
 		Build()

@@ -33,7 +33,11 @@ func ExampleWithFileStorage() {
 		BackoffMultiplier: 2.0,
 	}
 
-	processor, err := sdklog.NewAuditLogProcessorBuilder(exporter, adapter).
+	builder, err := sdklog.NewAuditLogProcessorBuilder(exporter, adapter)
+	if err != nil {
+		panic(fmt.Sprintf("processor builder: %v", err))
+	}
+	processor, err := builder.
 		SetScheduleDelay(2 * time.Second).
 		SetMaxExportBatchSize(100).
 		SetExporterTimeout(30 * time.Second).
@@ -90,7 +94,11 @@ func ExampleWithRedisDistributedStorage() {
 
 	exporter := &ConsoleExporter{}
 
-	processor, err := sdklog.NewAuditLogProcessorBuilder(exporter, adapter).
+	builder, err := sdklog.NewAuditLogProcessorBuilder(exporter, adapter)
+	if err != nil {
+		panic(fmt.Sprintf("processor builder: %v", err))
+	}
+	processor, err := builder.
 		SetScheduleDelay(1 * time.Second).
 		SetMaxExportBatchSize(50).
 		SetExporterTimeout(15 * time.Second).
@@ -146,7 +154,11 @@ func ExampleWithDatabaseStorage() {
 
 	customHandler := &sdklog.DefaultAuditExceptionHandler{}
 
-	processor, err := sdklog.NewAuditLogProcessorBuilder(exporter, adapter).
+	builder, err := sdklog.NewAuditLogProcessorBuilder(exporter, adapter)
+	if err != nil {
+		panic(fmt.Sprintf("processor builder: %v", err))
+	}
+	processor, err := builder.
 		SetScheduleDelay(1 * time.Second).
 		SetMaxExportBatchSize(100).
 		SetExporterTimeout(30 * time.Second).
@@ -183,7 +195,11 @@ func ExampleMultipleProcessorsWithDifferentStorages() {
 
 	exporter := &ConsoleExporter{}
 
-	memoryProcessor, err := sdklog.NewAuditLogProcessorBuilder(exporter, memoryAdapter).
+	memBuilder, err := sdklog.NewAuditLogProcessorBuilder(exporter, memoryAdapter)
+	if err != nil {
+		panic(fmt.Sprintf("processor builder: %v", err))
+	}
+	memoryProcessor, err := memBuilder.
 		SetScheduleDelay(500 * time.Millisecond).
 		SetMaxExportBatchSize(10).
 		Build()
@@ -192,7 +208,11 @@ func ExampleMultipleProcessorsWithDifferentStorages() {
 	}
 	defer memoryProcessor.Shutdown(ctx)
 
-	fileProcessor, err := sdklog.NewAuditLogProcessorBuilder(exporter, fileAdapter).
+	fileBuilder, err := sdklog.NewAuditLogProcessorBuilder(exporter, fileAdapter)
+	if err != nil {
+		panic(fmt.Sprintf("processor builder: %v", err))
+	}
+	fileProcessor, err := fileBuilder.
 		SetScheduleDelay(2 * time.Second).
 		SetMaxExportBatchSize(100).
 		Build()
@@ -241,7 +261,11 @@ func ExampleStorageClientWithCompression() {
 
 	exporter := &ConsoleExporter{}
 
-	processor, err := sdklog.NewAuditLogProcessorBuilder(exporter, adapter).
+	builder, err := sdklog.NewAuditLogProcessorBuilder(exporter, adapter)
+	if err != nil {
+		panic(fmt.Sprintf("processor builder: %v", err))
+	}
+	processor, err := builder.
 		SetScheduleDelay(1 * time.Second).
 		SetMaxExportBatchSize(100).
 		Build()

@@ -61,7 +61,11 @@ func TestAuditLogPersistence(t *testing.T) {
 	exporter := &FailingExporter{shouldFail: true}
 	exceptionHandler := &sdklog.ExampleExceptionHandler{}
 
-	processor, err := sdklog.NewAuditLogProcessorBuilder(exporter, store).
+	builder, err := sdklog.NewAuditLogProcessorBuilder(exporter, store)
+	if err != nil {
+		return fmt.Errorf("processor builder: %w", err)
+	}
+	processor, err := builder.
 		SetScheduleDelay(100 * time.Millisecond).
 		SetMaxExportBatchSize(10).
 		SetExporterTimeout(5 * time.Second).
@@ -208,7 +212,11 @@ func TestAuditLogRecoveryAfterCrash(t *testing.T) {
 
 	exporter1 := &FailingExporter{shouldFail: true}
 
-	processor1, err := sdklog.NewAuditLogProcessorBuilder(exporter1, store1).
+	builder1, err := sdklog.NewAuditLogProcessorBuilder(exporter1, store1)
+	if err != nil {
+		return fmt.Errorf("processor builder: %w", err)
+	}
+	processor1, err := builder1.
 		SetScheduleDelay(1 * time.Second).
 		SetMaxExportBatchSize(10).
 		Build()
@@ -246,7 +254,11 @@ func TestAuditLogRecoveryAfterCrash(t *testing.T) {
 
 	exporter2 := &FailingExporter{shouldFail: false}
 
-	processor2, err := sdklog.NewAuditLogProcessorBuilder(exporter2, store2).
+	builder2, err := sdklog.NewAuditLogProcessorBuilder(exporter2, store2)
+	if err != nil {
+		return fmt.Errorf("processor builder: %w", err)
+	}
+	processor2, err := builder2.
 		SetScheduleDelay(100 * time.Millisecond).
 		SetMaxExportBatchSize(10).
 		Build()

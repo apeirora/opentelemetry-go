@@ -740,7 +740,10 @@ func TestAuditLogProcessorBuilder(t *testing.T) {
 		exporter := NewMockExporter()
 		store := NewAuditLogInMemoryStore()
 
-		builder := NewAuditLogProcessorBuilder(exporter, store)
+		builder, err := NewAuditLogProcessorBuilder(exporter, store)
+		if err != nil {
+			t.Fatalf("NewAuditLogProcessorBuilder: %v", err)
+		}
 		config := builder.GetConfig()
 
 		if config.Exporter != exporter {
@@ -762,7 +765,11 @@ func TestAuditLogProcessorBuilder(t *testing.T) {
 		store := NewAuditLogInMemoryStore()
 		exceptionHandler := NewMockExceptionHandler()
 
-		builder := NewAuditLogProcessorBuilder(exporter, store).
+		builder, err := NewAuditLogProcessorBuilder(exporter, store)
+		if err != nil {
+			t.Fatalf("NewAuditLogProcessorBuilder: %v", err)
+		}
+		builder = builder.
 			SetExceptionHandler(exceptionHandler).
 			SetScheduleDelay(500 * time.Millisecond).
 			SetMaxExportBatchSize(100).
@@ -796,7 +803,10 @@ func TestAuditLogProcessorBuilder(t *testing.T) {
 		exporter := NewMockExporter()
 		store := NewAuditLogInMemoryStore()
 
-		builder := NewAuditLogProcessorBuilder(exporter, store)
+		builder, err := NewAuditLogProcessorBuilder(exporter, store)
+		if err != nil {
+			t.Fatalf("NewAuditLogProcessorBuilder: %v", err)
+		}
 		if err := builder.ValidateConfig(); err != nil {
 			t.Errorf("Expected valid config, got error: %v", err)
 		}
@@ -806,7 +816,10 @@ func TestAuditLogProcessorBuilder(t *testing.T) {
 		exporter := NewMockExporter()
 		store := NewAuditLogInMemoryStore()
 
-		builder := NewAuditLogProcessorBuilder(exporter, store)
+		builder, err := NewAuditLogProcessorBuilder(exporter, store)
+		if err != nil {
+			t.Fatalf("NewAuditLogProcessorBuilder: %v", err)
+		}
 		processor, err := builder.Build()
 		if err != nil {
 			t.Fatalf("Failed to build processor: %v", err)
@@ -818,58 +831,43 @@ func TestAuditLogProcessorBuilder(t *testing.T) {
 		}
 	})
 
-	t.Run("Builder Panic on Invalid Inputs", func(t *testing.T) {
+	t.Run("Builder errors on invalid inputs", func(t *testing.T) {
 		exporter := NewMockExporter()
 		store := NewAuditLogInMemoryStore()
 
-		// Test nil exporter
-		defer func() {
-			if r := recover(); r == nil {
-				t.Error("Expected panic with nil exporter")
-			}
-		}()
-		NewAuditLogProcessorBuilder(nil, store)
+		if _, err := NewAuditLogProcessorBuilder(nil, store); err == nil {
+			t.Error("expected error with nil exporter")
+		}
+		if _, err := NewAuditLogProcessorBuilder(exporter, nil); err == nil {
+			t.Error("expected error with nil store")
+		}
 
-		// Test nil store
-		defer func() {
-			if r := recover(); r == nil {
-				t.Error("Expected panic with nil store")
-			}
-		}()
-		NewAuditLogProcessorBuilder(exporter, nil)
-
-		// Test nil exception handler
-		builder := NewAuditLogProcessorBuilder(exporter, store)
-		defer func() {
-			if r := recover(); r == nil {
-				t.Error("Expected panic with nil exception handler")
-			}
-		}()
-		builder.SetExceptionHandler(nil)
-
-		// Test negative schedule delay
-		defer func() {
-			if r := recover(); r == nil {
-				t.Error("Expected panic with negative schedule delay")
-			}
-		}()
+		builder, err := NewAuditLogProcessorBuilder(exporter, store)
+		if err != nil {
+			t.Fatalf("NewAuditLogProcessorBuilder: %v", err)
+		}
 		builder.SetScheduleDelay(-1)
+		if _, err := builder.Build(); err == nil {
+			t.Error("expected error with negative schedule delay")
+		}
 
-		// Test zero batch size
-		defer func() {
-			if r := recover(); r == nil {
-				t.Error("Expected panic with zero batch size")
-			}
-		}()
+		builder, err = NewAuditLogProcessorBuilder(exporter, store)
+		if err != nil {
+			t.Fatalf("NewAuditLogProcessorBuilder: %v", err)
+		}
 		builder.SetMaxExportBatchSize(0)
+		if _, err := builder.Build(); err == nil {
+			t.Error("expected error with zero batch size")
+		}
 
-		// Test negative timeout
-		defer func() {
-			if r := recover(); r == nil {
-				t.Error("Expected panic with negative timeout")
-			}
-		}()
+		builder, err = NewAuditLogProcessorBuilder(exporter, store)
+		if err != nil {
+			t.Fatalf("NewAuditLogProcessorBuilder: %v", err)
+		}
 		builder.SetExporterTimeout(-1)
+		if _, err := builder.Build(); err == nil {
+			t.Error("expected error with negative timeout")
+		}
 	})
 }
 

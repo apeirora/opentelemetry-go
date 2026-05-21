@@ -409,7 +409,11 @@ func TestProcessorWithDifferentStorages(t *testing.T) {
 
 			exporter := &mockStorageExporter{records: []Record{}}
 
-			processor, err := NewAuditLogProcessorBuilder(exporter, tc.store).
+			builder, err := NewAuditLogProcessorBuilder(exporter, tc.store)
+			if err != nil {
+				t.Fatalf("NewAuditLogProcessorBuilder: %v", err)
+			}
+			processor, err := builder.
 				SetScheduleDelay(100 * time.Millisecond).
 				SetMaxExportBatchSize(10).
 				Build()

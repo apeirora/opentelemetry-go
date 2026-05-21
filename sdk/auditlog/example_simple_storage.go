@@ -34,7 +34,11 @@ func memoryExample(ctx context.Context) {
 
 	exporter := &ConsoleExporter{}
 
-	processor, err := sdklog.NewAuditLogProcessorWithStorage(exporter).
+	builder, err := sdklog.NewAuditLogProcessorWithStorage(exporter)
+	if err != nil {
+		panic(err)
+	}
+	processor, err := builder.
 		WithMemoryStorage().
 		SetScheduleDelay(100 * time.Millisecond).
 		Build()
@@ -57,7 +61,11 @@ func redisExample(ctx context.Context) {
 
 	exporter := &ConsoleExporter{}
 
-	processor, err := sdklog.NewAuditLogProcessorWithStorage(exporter).
+	builder, err := sdklog.NewAuditLogProcessorWithStorage(exporter)
+	if err != nil {
+		panic(err)
+	}
+	processor, err := builder.
 		WithRedisStorage(
 			sdklog.WithRedisEndpoint("localhost:6379"),
 			sdklog.WithRedisKeyPrefix("myapp_"),
@@ -90,7 +98,11 @@ func fileExample(ctx context.Context) {
 
 	exporter := &ConsoleExporter{}
 
-	processor, err := sdklog.NewAuditLogProcessorWithStorage(exporter).
+	builder, err := sdklog.NewAuditLogProcessorWithStorage(exporter)
+	if err != nil {
+		panic(err)
+	}
+	processor, err := builder.
 		WithFileStorage("./example_storage").
 		SetScheduleDelay(100 * time.Millisecond).
 		Build()
@@ -114,7 +126,11 @@ func sqlExample(ctx context.Context) {
 
 	exporter := &ConsoleExporter{}
 
-	processor, err := sdklog.NewAuditLogProcessorWithStorage(exporter).
+	builder, err := sdklog.NewAuditLogProcessorWithStorage(exporter)
+	if err != nil {
+		panic(err)
+	}
+	processor, err := builder.
 		WithSQLStorage(
 			sdklog.WithSQLDriver("sqlite3"),
 			sdklog.WithSQLDatasource(":memory:"),
