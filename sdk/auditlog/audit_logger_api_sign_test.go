@@ -35,7 +35,7 @@ func TestEmitWithResultAutoHMACSigning(t *testing.T) {
 		RecordID:      "rid-auto-1",
 		SchemaVersion: "1.0",
 	}
-	wantSigned, err := signAuditRecordHMAC(rec, key, "sha256")
+	wantSigned, err := signAuditRecordHMAC(rec, key, "sha256", true)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -52,7 +52,7 @@ func TestEmitWithResultAutoHMACSigning(t *testing.T) {
 	if wantSigned.HMAC == "" {
 		t.Fatal("expected hmac on signed record")
 	}
-	if err := verifyAuditIntegrity(wantSigned, key, nil, "sha256"); err != nil {
+	if err := verifyAuditIntegrity(wantSigned, key, nil, "sha256", AuditSignContentMeta); err != nil {
 		t.Fatal(err)
 	}
 }

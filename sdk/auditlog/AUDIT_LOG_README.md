@@ -154,8 +154,19 @@ if err != nil {
 
 `AuditLogProcessorConfig.StorageWriteMode` controls when records are written to store in async mode:
 
-- `AuditStorageWriteAlways` (default): save before export attempt.
-- `AuditStorageWriteOnError`: save only when an export attempt fails.
+- `AuditStorageWriteAlways` (default): save before export attempt. Survives process restarts via the configured backend.
+- `AuditStorageWriteOnError`: save only when an export attempt fails. Lower write load while healthy; records in the in-memory queue are lost if the process crashes before export fails or succeeds.
+
+Choose a storage backend when building the processor:
+
+| Backend | Implementation | Notes |
+|---------|----------------|-------|
+| Memory | `SimpleKeyValueStorageClient` | Process-local; not durable |
+| File | `BoltDBStorageClient` (bbolt) or `AuditLogFileStore` (JSONL) | Durable on disk |
+| Redis | `RealRedisStorageClient` | Distributed; optional TTL via `Expiration` (0 = no expiry) |
+| SQL | `SQLStorageClient` | `database/sql` with sqlite (built-in), postgres, or mysql drivers |
+
+For SQLite the `sqlite` driver is registered when importing `go.opentelemetry.io/otel/sdk/auditlog/storage`. For PostgreSQL or MySQL, register the driver in your application (for example `_ "github.com/lib/pq"` or `_ "github.com/go-sql-driver/mysql"`).
 
 Example:
 
@@ -509,7 +520,7 @@ func TestAuditLogging(t *testing.T) {
 
 | Option | Type | Default | Description |
 |--------|------|---------|-------------|
-| `MaxAttempts` | `int` | `3` | Maximum retry attempts |
+| `MaxAttempts` | `int` | `0` (unlimited) | Maximum export retry cycles after a failed batch; records remain in the store (or queue if not yet persisted) when exceeded |
 | `InitialBackoff` | `time.Duration` | `1s` | Initial backoff duration |
 | `MaxBackoff` | `time.Duration` | `1m` | Maximum backoff duration |
 | `BackoffMultiplier` | `float64` | `2.0` | Backoff multiplier |

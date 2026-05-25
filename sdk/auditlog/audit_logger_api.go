@@ -56,6 +56,7 @@ const (
 	auditAttrRecordID      = "audit.record_id"
 	auditAttrSignature     = "audit.signature"
 	auditAttrHMAC          = "audit.hmac"
+	auditAttrHash          = "audit.hash"
 	auditAttrSchemaVersion = "audit.schema_version"
 	auditAttrKeyID         = "audit.key_id"
 	auditAttrSequenceNo    = "audit.sequence_no"
@@ -113,18 +114,15 @@ func (l *auditLogger) EmitWithResult(ctx context.Context, record AuditRecord) Au
 		}
 		return result
 	}
-	if len(l.provider.hmacVerificationKey) > 0 &&
-		record.HMAC == "" && record.Signature == "" {
-		signed, err := signAuditRecordHMAC(record, l.provider.hmacVerificationKey, l.provider.hashAlgorithm)
-		if err != nil {
-			result.StatusCode, result.Status, result.Reason = mapAuditError(
-				newAuditStatusError(AuditErrorInvalidRequest, "audit hmac signing failed", false, err),
-			)
-			return result
-		}
-		record = signed
+	record, err := l.provider.enrichIntegrity(ctx, record)
+	if err != nil {
+		result.StatusCode, result.Status, result.Reason = mapAuditError(
+			newAuditStatusError(AuditErrorInvalidRequest, "audit integrity enrichment failed", false, err),
+		)
+		return result
 	}
-	if err := validateRequiredAuditRecord(record); err != nil {
+	result.Hash = record.Hash
+	if err := validateRequiredAuditRecord(record, l.provider); err != nil {
 		result.StatusCode, result.Status, result.Reason = mapAuditError(err)
 		return result
 	}
@@ -133,6 +131,7 @@ func (l *auditLogger) EmitWithResult(ctx context.Context, record AuditRecord) Au
 		l.provider.hmacVerificationKey,
 		l.provider.signatureVerifier,
 		l.provider.hashAlgorithm,
+		l.provider.signContent,
 	); err != nil {
 		result.StatusCode, result.Status, result.Reason = mapAuditError(err)
 		return result
@@ -157,11 +156,14 @@ func (l *auditLogger) EmitWithResult(ctx context.Context, record AuditRecord) Au
 	if record.SourceIP != "" {
 		otelRecord.AddAttributes(log.String(auditAttrSourceIP, record.SourceIP))
 	}
-	if record.Signature != "" {
+	if l.provider.exportIntegrity.Has(AuditIntegritySignature) && record.Signature != "" {
 		otelRecord.AddAttributes(log.String(auditAttrSignature, record.Signature))
 	}
-	if record.HMAC != "" {
+	if l.provider.exportIntegrity.Has(AuditIntegrityHMAC) && record.HMAC != "" {
 		otelRecord.AddAttributes(log.String(auditAttrHMAC, record.HMAC))
+	}
+	if l.provider.exportIntegrity.Has(AuditIntegrityHash) && record.Hash != "" {
+		otelRecord.AddAttributes(log.String(auditAttrHash, record.Hash))
 	}
 	if record.KeyID != "" {
 		otelRecord.AddAttributes(log.String(auditAttrKeyID, record.KeyID))
@@ -204,7 +206,7 @@ func (l *auditLogger) EmitWithResult(ctx context.Context, record AuditRecord) Au
 	return result
 }
 
-func validateRequiredAuditRecord(record AuditRecord) error {
+func validateRequiredAuditRecord(record AuditRecord, p *AuditLoggerProvider) error {
 	if record.Timestamp().IsZero() {
 		return newAuditStatusError(AuditErrorInvalidRequest, "audit timestamp is required", false, nil)
 	}
@@ -235,8 +237,8 @@ func validateRequiredAuditRecord(record AuditRecord) error {
 	if record.RecordID == "" {
 		return newAuditStatusError(AuditErrorInvalidRequest, "audit record_id is required", false, nil)
 	}
-	if record.Signature == "" && record.HMAC == "" {
-		return newAuditStatusError(AuditErrorInvalidRequest, "audit signature or hmac is required", false, nil)
+	if !p.satisfiesRequiredIntegrity(record) {
+		return newAuditStatusError(AuditErrorInvalidRequest, "audit integrity proof is required", false, nil)
 	}
 	if record.SchemaVersion == "" {
 		return newAuditStatusError(AuditErrorInvalidRequest, "audit schema_version is required", false, nil)
@@ -261,18 +263,27 @@ func (l *auditLogger) Enabled(ctx context.Context, eventName string) bool {
 }
 
 type AuditLoggerProvider struct {
-	processors           []AuditRecordProcessor
-	hmacVerificationKey  []byte
-	signatureVerifier    AuditSignatureVerifier
-	hashAlgorithm        string
-	authorizer           AuditAuthorizer
-	maxBodyBytes         int
-	maxAttributeCount    int
-	maxRequestsPerSecond int
-	rateLimiter          *rate.Limiter
-	loggersMu            sync.Mutex
+	processors            []AuditRecordProcessor
+	hmacVerificationKey   []byte
+	signatureVerifier     AuditSignatureVerifier
+	signatureSigner       AuditSignatureSigner
+	hashAlgorithm         string
+	signContent           AuditSignContent
+	autoSignIntegrity     AuditIntegrityFields
+	requiredIntegrity     AuditIntegrityFields
+	exportIntegrity       AuditIntegrityFields
+	explicitRecordSigning bool
+	hmacSigner            AuditHMACSigner
+	hashComputer          AuditHashComputer
+	integrityEnricher     AuditIntegrityEnricher
+	authorizer            AuditAuthorizer
+	maxBodyBytes          int
+	maxAttributeCount     int
+	maxRequestsPerSecond  int
+	rateLimiter           *rate.Limiter
+	loggersMu             sync.Mutex
 	loggers              map[auditLoggerKey]*auditLogger
-	stopped              atomic.Bool
+	stopped               atomic.Bool
 }
 
 type auditLoggerKey struct {
@@ -281,15 +292,30 @@ type auditLoggerKey struct {
 	schemaURL string
 }
 
+type AuditHMACSigner func(record AuditRecord, key []byte, algorithm string) (AuditRecord, error)
+
+type AuditHashComputer func(record AuditRecord, algorithm string) (AuditRecord, error)
+
+type AuditIntegrityEnricher func(ctx context.Context, record AuditRecord) (AuditRecord, error)
+
 type auditProviderConfig struct {
-	processors          []AuditRecordProcessor
-	hmacVerificationKey []byte
-	signatureVerifier   AuditSignatureVerifier
-	hashAlgorithm       string
-	authorizer          AuditAuthorizer
-	maxBodyBytes        int
-	maxAttributeCount   int
-	maxRequestsPerSecond int
+	processors            []AuditRecordProcessor
+	hmacVerificationKey   []byte
+	signatureVerifier     AuditSignatureVerifier
+	signatureSigner       AuditSignatureSigner
+	hashAlgorithm         string
+	signContent           AuditSignContent
+	autoSignIntegrity     AuditIntegrityFields
+	requiredIntegrity     AuditIntegrityFields
+	exportIntegrity       AuditIntegrityFields
+	explicitRecordSigning bool
+	hmacSigner            AuditHMACSigner
+	hashComputer          AuditHashComputer
+	integrityEnricher     AuditIntegrityEnricher
+	authorizer            AuditAuthorizer
+	maxBodyBytes          int
+	maxAttributeCount     int
+	maxRequestsPerSecond  int
 }
 
 type AuditLoggerProviderOption interface {
@@ -309,10 +335,84 @@ func WithAuditRecordProcessor(processor AuditRecordProcessor) AuditLoggerProvide
 	})
 }
 
+// WithAuditRecordSigning configures integrity applied to every emitted record.
+// fields selects which proofs the provider auto-computes (HMAC, hash, certificate signature).
+// content selects the signed payload: AuditSignContentMeta (canonical), AuditSignContentBody, or AuditSignContentAttr.
+// Required proofs match fields; use WithAuditRequiredIntegrity to override.
+func WithAuditRecordSigning(fields AuditIntegrityFields, content AuditSignContent) AuditLoggerProviderOption {
+	return auditLoggerProviderOptionFunc(func(cfg auditProviderConfig) auditProviderConfig {
+		cfg.explicitRecordSigning = true
+		cfg.autoSignIntegrity = fields
+		cfg.signContent = content
+		cfg.requiredIntegrity = fields
+		return cfg
+	})
+}
+
+// WithAuditSignContent sets the default sign_content mode for every record (body, meta, attr).
+func WithAuditSignContent(content AuditSignContent) AuditLoggerProviderOption {
+	return auditLoggerProviderOptionFunc(func(cfg auditProviderConfig) auditProviderConfig {
+		cfg.signContent = content
+		return cfg
+	})
+}
+
+// WithAuditAutoSignIntegrity sets which integrity fields the provider computes when missing.
+func WithAuditAutoSignIntegrity(fields AuditIntegrityFields) AuditLoggerProviderOption {
+	return auditLoggerProviderOptionFunc(func(cfg auditProviderConfig) auditProviderConfig {
+		cfg.explicitRecordSigning = true
+		cfg.autoSignIntegrity = fields
+		return cfg
+	})
+}
+
+// WithAuditRequiredIntegrity sets which integrity fields must be present (any one satisfies).
+func WithAuditRequiredIntegrity(fields AuditIntegrityFields) AuditLoggerProviderOption {
+	return auditLoggerProviderOptionFunc(func(cfg auditProviderConfig) auditProviderConfig {
+		cfg.requiredIntegrity = fields
+		return cfg
+	})
+}
+
+// WithAuditExportIntegrity sets which integrity fields are exported as log attributes.
+func WithAuditExportIntegrity(fields AuditIntegrityFields) AuditLoggerProviderOption {
+	return auditLoggerProviderOptionFunc(func(cfg auditProviderConfig) auditProviderConfig {
+		cfg.exportIntegrity = fields
+		return cfg
+	})
+}
+
+func WithAuditHMACSigner(signer AuditHMACSigner) AuditLoggerProviderOption {
+	return auditLoggerProviderOptionFunc(func(cfg auditProviderConfig) auditProviderConfig {
+		cfg.hmacSigner = signer
+		return cfg
+	})
+}
+
+func WithAuditHashComputer(computer AuditHashComputer) AuditLoggerProviderOption {
+	return auditLoggerProviderOptionFunc(func(cfg auditProviderConfig) auditProviderConfig {
+		cfg.hashComputer = computer
+		return cfg
+	})
+}
+
+func WithAuditSignatureSigner(signer AuditSignatureSigner) AuditLoggerProviderOption {
+	return auditLoggerProviderOptionFunc(func(cfg auditProviderConfig) auditProviderConfig {
+		cfg.signatureSigner = signer
+		return cfg
+	})
+}
+
+func WithAuditIntegrityEnricher(enricher AuditIntegrityEnricher) AuditLoggerProviderOption {
+	return auditLoggerProviderOptionFunc(func(cfg auditProviderConfig) auditProviderConfig {
+		cfg.integrityEnricher = enricher
+		return cfg
+	})
+}
+
 // WithAuditHMACVerificationKey configures the shared secret used to verify HMAC tags on
-// incoming audit records. When the key is non-empty and a record omits HMAC and
-// Signature, the provider computes HMAC from the canonical audit payload before
-// validation and processing (in-process signing for trusted emitters).
+// incoming audit records. When the key is non-empty and record signing is not configured
+// explicitly, the provider auto-computes HMAC before validation (trusted in-process emitters).
 func WithAuditHMACVerificationKey(key []byte) AuditLoggerProviderOption {
 	return auditLoggerProviderOptionFunc(func(cfg auditProviderConfig) auditProviderConfig {
 		if len(key) == 0 {
@@ -326,7 +426,9 @@ func WithAuditHMACVerificationKey(key []byte) AuditLoggerProviderOption {
 	})
 }
 
-type AuditSignatureVerifier func(record AuditRecord, canonicalPayload []byte) error
+// AuditSignatureVerifier verifies a record signature. The payload bytes match those used
+// when signing (see signingPayload and AuditSignContent).
+type AuditSignatureVerifier func(record AuditRecord, payload []byte) error
 type AuditAuthorizer func(ctx context.Context, record AuditRecord) error
 
 func WithAuditSignatureVerifier(verifier AuditSignatureVerifier) AuditLoggerProviderOption {
@@ -371,21 +473,52 @@ func WithAuditMaxRequestsPerSecond(limit int) AuditLoggerProviderOption {
 	})
 }
 
+func resolveAuditProviderIntegrity(cfg auditProviderConfig) (autoSign, required, export AuditIntegrityFields, signContent AuditSignContent) {
+	autoSign = cfg.autoSignIntegrity
+	required = cfg.requiredIntegrity
+	export = cfg.exportIntegrity
+	signContent = cfg.signContent
+	if !cfg.explicitRecordSigning {
+		autoSign = defaultLegacyAutoSignIntegrity(len(cfg.hmacVerificationKey) > 0)
+	}
+	if !required.AnySet() {
+		if cfg.explicitRecordSigning && autoSign.AnySet() {
+			required = autoSign
+		} else {
+			required = defaultRequiredIntegrity()
+		}
+	}
+	if !export.AnySet() {
+		export = defaultExportIntegrity()
+	}
+	return autoSign, required, export, signContent
+}
+
 func NewAuditLoggerProvider(opts ...AuditLoggerProviderOption) *AuditLoggerProvider {
 	cfg := auditProviderConfig{}
 	for _, opt := range opts {
 		cfg = opt.apply(cfg)
 	}
+	autoSign, required, export, signContent := resolveAuditProviderIntegrity(cfg)
 	p := &AuditLoggerProvider{
-		processors:           cfg.processors,
-		hmacVerificationKey:  cfg.hmacVerificationKey,
-		signatureVerifier:    cfg.signatureVerifier,
-		hashAlgorithm:        cfg.hashAlgorithm,
-		authorizer:           cfg.authorizer,
-		maxBodyBytes:         cfg.maxBodyBytes,
-		maxAttributeCount:    cfg.maxAttributeCount,
-		maxRequestsPerSecond: cfg.maxRequestsPerSecond,
-		loggers:              make(map[auditLoggerKey]*auditLogger),
+		processors:            cfg.processors,
+		hmacVerificationKey:   cfg.hmacVerificationKey,
+		signatureVerifier:     cfg.signatureVerifier,
+		signatureSigner:       cfg.signatureSigner,
+		hashAlgorithm:         cfg.hashAlgorithm,
+		signContent:           signContent,
+		autoSignIntegrity:     autoSign,
+		requiredIntegrity:     required,
+		exportIntegrity:       export,
+		explicitRecordSigning: cfg.explicitRecordSigning,
+		hmacSigner:            cfg.hmacSigner,
+		hashComputer:          cfg.hashComputer,
+		integrityEnricher:     cfg.integrityEnricher,
+		authorizer:            cfg.authorizer,
+		maxBodyBytes:          cfg.maxBodyBytes,
+		maxAttributeCount:     cfg.maxAttributeCount,
+		maxRequestsPerSecond:  cfg.maxRequestsPerSecond,
+		loggers:               make(map[auditLoggerKey]*auditLogger),
 	}
 	if cfg.maxRequestsPerSecond > 0 {
 		lim := rate.Limit(cfg.maxRequestsPerSecond)

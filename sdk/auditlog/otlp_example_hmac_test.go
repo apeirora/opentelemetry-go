@@ -71,7 +71,7 @@ func exampleRecordForBodyHMAC() AuditRecord {
 
 func TestOTLPAuditLoginHMACBodyWithDevKeyFile(t *testing.T) {
 	key := loadTestappHMACKey(t)
-	signed, err := signAuditRecordHMAC(exampleRecordForBodyHMAC(), key, "sha256")
+	signed, err := signAuditRecordHMAC(exampleRecordForBodyHMAC(), key, "sha256", true)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -82,7 +82,7 @@ func TestOTLPAuditLoginHMACBodyWithDevKeyFile(t *testing.T) {
 
 func TestOTLPAuditLoginHMACWithDevKeyFile(t *testing.T) {
 	key := loadTestappHMACKey(t)
-	signed, err := signAuditRecordHMAC(exampleRecordForHMAC(), key, "sha256")
+	signed, err := signAuditRecordHMAC(exampleRecordForHMAC(), key, "sha256", true)
 	if err != nil {
 		t.Fatal(err)
 	}

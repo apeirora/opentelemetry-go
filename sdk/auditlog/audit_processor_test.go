@@ -6,6 +6,7 @@ package auditlog
 import (
 	"context"
 	"fmt"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -1532,5 +1533,61 @@ func TestAuditLogProcessorShutdownAfterFailedExportKeepsStoredRecords(t *testing
 	}
 	if len(persisted) != recordsToEmit {
 		t.Fatalf("expected %d persisted records after failed shutdown flush, got %d", recordsToEmit, len(persisted))
+	}
+}
+
+func TestAuditLogProcessorMaxAttemptsStopsRequeue(t *testing.T) {
+	exporter := NewMockExporter()
+	exporter.SetExportError(fmt.Errorf("export down"))
+	store := NewAuditLogInMemoryStore()
+	handler := NewMockExceptionHandler()
+	cfg := AuditLogProcessorConfig{
+		Exporter:           exporter,
+		AuditLogStore:      store,
+		ExceptionHandler:   handler,
+		ScheduleDelay:      time.Hour,
+		MaxExportBatchSize: 8,
+		ExporterTimeout:    time.Second,
+		RetryPolicy: RetryPolicy{
+			InitialBackoff:    time.Millisecond,
+			MaxBackoff:        time.Millisecond,
+			BackoffMultiplier: 1,
+			MaxAttempts:       2,
+		},
+		DeliveryMode: AuditDeliveryModeAsyncStoreRetry,
+	}
+	processor, err := NewAuditLogProcessor(cfg)
+	if err != nil {
+		t.Fatalf("failed to create processor: %v", err)
+	}
+	defer processor.Shutdown(context.Background())
+
+	rec := createTestRecord("max-attempts", log.SeverityInfo)
+	if err := processor.OnEmit(context.Background(), &rec); err != nil {
+		t.Fatalf("emit failed: %v", err)
+	}
+
+	for i := 0; i < 6; i++ {
+		_ = processor.ForceFlush(context.Background())
+		if processor.GetRetryAttempts() >= 2 && processor.GetQueueSize() == 0 {
+			break
+		}
+	}
+	if processor.GetQueueSize() != 0 {
+		t.Fatalf("expected queue drained after max attempts, size=%d", processor.GetQueueSize())
+	}
+	if processor.GetRetryAttempts() < 2 {
+		t.Fatalf("expected at least 2 retry attempts, got %d", processor.GetRetryAttempts())
+	}
+
+	var maxMsg bool
+	for _, ex := range handler.GetExceptions() {
+		if strings.Contains(ex.Message, "after 2 retry attempts") {
+			maxMsg = true
+			break
+		}
+	}
+	if !maxMsg {
+		t.Fatalf("expected max-attempts exception, got %#v", handler.GetExceptions())
 	}
 }

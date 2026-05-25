@@ -48,11 +48,7 @@ func (c *RealRedisStorageClient) Get(ctx context.Context, key string) ([]byte, e
 
 func (c *RealRedisStorageClient) Set(ctx context.Context, key string, value []byte) error {
 	fullKey := c.prefix + key
-	expiration := c.expiration
-	if expiration == 0 {
-		expiration = 24 * time.Hour
-	}
-	if err := c.client.Set(ctx, fullKey, value, expiration).Err(); err != nil {
+	if err := c.client.Set(ctx, fullKey, value, c.expiration).Err(); err != nil {
 		return fmt.Errorf("failed to set key %s: %w", key, err)
 	}
 	return nil
@@ -72,11 +68,7 @@ func (c *RealRedisStorageClient) Batch(ctx context.Context, ops ...Operation) er
 		switch o := op.(type) {
 		case *SetOperation:
 			fullKey := c.prefix + o.Key
-			expiration := c.expiration
-			if expiration == 0 {
-				expiration = 24 * time.Hour
-			}
-			pipe.Set(ctx, fullKey, o.Value, expiration)
+			pipe.Set(ctx, fullKey, o.Value, c.expiration)
 		case *DeleteOperation:
 			fullKey := c.prefix + o.Key
 			pipe.Del(ctx, fullKey)

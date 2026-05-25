@@ -132,8 +132,8 @@ func sqlExample(ctx context.Context) {
 	}
 	processor, err := builder.
 		WithSQLStorage(
-			sdklog.WithSQLDriver("sqlite3"),
-			sdklog.WithSQLDatasource(":memory:"),
+			sdklog.WithSQLDriver("sqlite"),
+			sdklog.WithSQLDatasource("file:audit_example.db"),
 			sdklog.WithSQLTable("audit_logs"),
 		).
 		SetScheduleDelay(100 * time.Millisecond).
@@ -148,8 +148,8 @@ func sqlExample(ctx context.Context) {
 	processor.ForceFlush(ctx)
 
 	fmt.Println("✅ SQL storage configured!")
-	fmt.Println("   - Driver: sqlite3")
-	fmt.Println("   - Database: :memory:")
+	fmt.Println("   - Driver: sqlite")
+	fmt.Println("   - Database: file:audit_example.db")
 	fmt.Println("   Use case: Enterprise, compliance, SQL queries")
 }
 

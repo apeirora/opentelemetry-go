@@ -10,8 +10,12 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ### Added
 
-- In `go.opentelemetry.io/otel/sdk/auditlog`, when `WithAuditHMACVerificationKey` is configured with a non-empty key and an audit record omits `Hash`, `HMAC`, and `Signature`, the provider computes hash and HMAC from the canonical audit payload before validation (trusted in-process emitters no longer need to pre-sign).
+- In `go.opentelemetry.io/otel/sdk/auditlog`, add `WithAuditRecordSigning` to configure per-provider integrity for every emitted record (HMAC, hash, and/or certificate signature) and the signed payload scope (`AuditSignContentMeta`, `AuditSignContentBody`, or `AuditSignContentAttr`). Add `WithAuditSignContent`, `WithAuditAutoSignIntegrity`, `WithAuditRequiredIntegrity`, `WithAuditExportIntegrity`, custom `WithAuditHMACSigner`, `WithAuditHashComputer`, `WithAuditSignatureSigner`, `WithAuditIntegrityEnricher`, hash verification, `audit.hash` export, and `NewAuditCertificateSignatureSigner` / `NewAuditCertificateSignatureSignerFromFiles` for certificate-based signatures.
+- In `go.opentelemetry.io/otel/sdk/auditlog`, when `WithAuditHMACVerificationKey` is configured with a non-empty key and record signing is not configured explicitly, the provider auto-computes HMAC before validation (trusted in-process emitters no longer need to pre-sign).
 - Add `WithAuditHMACVerificationKeyFromEnvironment`, `EnvAuditlogHMACKeyFile`, and `EnvAuditlogHMACKey` in `go.opentelemetry.io/otel/sdk/auditlog` to load the HMAC verification key from `OTEL_AUDITLOG_HMAC_KEY_FILE` (path) or `OTEL_AUDITLOG_HMAC_KEY` (raw string).
+- In `go.opentelemetry.io/otel/sdk/auditlog`, add `AuditStorageWriteMode` with builder `SetStorageWriteMode` to choose between `AuditStorageWriteAlways` (default) and `AuditStorageWriteOnError` (persist only after failed export attempts).
+- In `go.opentelemetry.io/otel/sdk/auditlog`, add `RetryPolicy.MaxAttempts` to cap export retry cycles (zero means unlimited).
+- In `go.opentelemetry.io/otel/sdk/auditlog`, `AuditLogProcessor` uses a single background export worker with coalesced wakeups instead of spawning unbounded export goroutines.
 - Add `ByteSlice` and `ByteSliceValue` functions for new `BYTESLICE` attribute type in `go.opentelemetry.io/otel/attribute`. (#7948)
 - Apply attribute value limit to the `KindBytes` attribute type in `go.opentelemetry.io/otel/sdk/log`. (#7990)
 - Apply attribute value limit to the `BYTESLICE` attribute type in `go.opentelemetry.io/otel/sdk/trace`. (#7990)
@@ -91,7 +95,9 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 - In `go.opentelemetry.io/otel/sdk/auditlog/store`, `AuditLogFileStore` compaction falls back to truncating the log file and copying from a temp file when rename/replace fails (helps Windows when the log path is open elsewhere).
 - In `go.opentelemetry.io/otel/sdk/auditlog`, `identity.GetRecordID` uses the last non-empty `audit.record_id` when iterating attributes, and `EmitWithResult` skips adding `audit.record_id` when the cloned `Record` already contains the same id. Together this keeps file-store compaction aligned with exported records when callers pre-set `audit.record_id` on the embedded `Record` (as in the auditlog testapp).
 - In `go.opentelemetry.io/otel/sdk/auditlog/recordcodec`, `Deserialize` applies unlimited attribute count and value length limits while rebuilding the `sdk/log.Record`, matching logger-created records. Previously the zero-value limits treated `0` as "truncate strings to length zero", so persisted audit lines lost attribute payloads and durable store compaction could not match exported record ids.
-- In `go.opentelemetry.io/otel/sdk/auditlog`, add `AuditStorageWriteMode` with builder `SetStorageWriteMode` to choose between `AuditStorageWriteAlways` (default) and `AuditStorageWriteOnError` (persist only after failed export attempts).
+- In `go.opentelemetry.io/otel/sdk/auditlog`, signature verification uses the same `sign_content` payload bytes as signing (HMAC/hash already did).
+- In `go.opentelemetry.io/otel/sdk/auditlog`, processor shutdown no longer races with ad-hoc export goroutines started from `OnEmit`.
+- In `go.opentelemetry.io/otel/sdk/auditlog/storage`, replace in-memory BoltDB and SQL stubs with durable `go.etcd.io/bbolt` and `database/sql` implementations (SQLite via `modernc.org/sqlite`, plus postgres/mysql drivers when registered by the application).
 
 <!-- Released section -->
 <!-- Don't change this section unless doing release -->

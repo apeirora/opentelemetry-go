@@ -40,7 +40,7 @@ type RedisOption func(*RedisStorageConfig)
 func WithRedis(endpoint string, opts ...RedisOption) FactoryOption {
 	return func(f *Factory) {
 		f.storageType = TypeRedis
-		config := RedisStorageConfig{Endpoint: endpoint, Prefix: "otel_", Expiration: 24 * time.Hour}
+		config := RedisStorageConfig{Endpoint: endpoint, Prefix: "otel_"}
 		for _, opt := range opts {
 			opt(&config)
 		}

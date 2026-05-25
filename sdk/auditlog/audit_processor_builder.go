@@ -187,6 +187,9 @@ func (b *AuditLogProcessorBuilder) ValidateConfig() error {
 	if b.config.RetryPolicy.BackoffMultiplier <= 0 {
 		return fmt.Errorf("retry policy backoff multiplier must be positive")
 	}
+	if b.config.RetryPolicy.MaxAttempts < 0 {
+		return fmt.Errorf("retry policy max attempts must be non-negative")
+	}
 	if b.config.StorageWriteMode != AuditStorageWriteAlways && b.config.StorageWriteMode != AuditStorageWriteOnError {
 		return fmt.Errorf("storage write mode must be always or on_error")
 	}

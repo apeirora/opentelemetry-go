@@ -6,6 +6,7 @@ package storage
 import (
 	"context"
 	"fmt"
+	"path/filepath"
 )
 
 type Extension interface {
@@ -84,7 +85,7 @@ func (f *FileExtension) GetClient(ctx context.Context, name string) (StorageClie
 	if client, exists := f.clients[name]; exists {
 		return client, nil
 	}
-	filePath := fmt.Sprintf("%s/%s.db", f.config.Directory, name)
+	filePath := filepath.Join(f.config.Directory, name+".db")
 	client, err := NewBoltDBStorageClient(filePath)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create file storage client: %w", err)

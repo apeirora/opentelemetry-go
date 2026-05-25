@@ -40,7 +40,7 @@ func TestWithAuditHMACVerificationKeyFromEnvironment_Variable(t *testing.T) {
 		RecordID:      "rid-env-1",
 		SchemaVersion: "1.0",
 	}
-	wantSigned, err := signAuditRecordHMAC(rec, key, "sha256")
+	wantSigned, err := signAuditRecordHMAC(rec, key, "sha256", true)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -88,7 +88,7 @@ func TestWithAuditHMACVerificationKeyFromEnvironment_File(t *testing.T) {
 		RecordID:      "rid-file-1",
 		SchemaVersion: "1.0",
 	}
-	wantSigned, err := signAuditRecordHMAC(rec, key, "sha256")
+	wantSigned, err := signAuditRecordHMAC(rec, key, "sha256", true)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -155,7 +155,7 @@ func TestWithAuditHMACVerificationKeyFromEnvironment_UnsetNoOp(t *testing.T) {
 		RecordID:      "rid-noop-1",
 		SchemaVersion: "1.0",
 	}
-	wantSigned, err := signAuditRecordHMAC(rec, explicit, "sha256")
+	wantSigned, err := signAuditRecordHMAC(rec, explicit, "sha256", true)
 	if err != nil {
 		t.Fatal(err)
 	}

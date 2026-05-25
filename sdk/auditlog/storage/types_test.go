@@ -5,6 +5,7 @@ package storage
 
 import (
 	"context"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -55,8 +56,8 @@ func TestSimpleKeyValueStorageClientBatch(t *testing.T) {
 		t.Fatalf("Failed to execute batch: %v", err)
 	}
 
-	if client.Size() != 0 {
-		t.Errorf("Expected 0 keys after batch (operations don't actually execute), got %d", client.Size())
+	if client.Size() != 3 {
+		t.Errorf("Expected 3 keys after batch, got %d", client.Size())
 	}
 }
 
@@ -80,6 +81,7 @@ func TestRedisStorageClient(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to create Redis client: %v", err)
 	}
+	defer client.Close(ctx)
 
 	key := "test_key"
 	value := []byte("test_value")
@@ -102,11 +104,36 @@ func TestRedisStorageClient(t *testing.T) {
 	}
 }
 
+func TestRedisStorageClientNoExpirationByDefault(t *testing.T) {
+	ctx := context.Background()
+	redisServer, err := miniredis.Run()
+	if err != nil {
+		t.Fatalf("Failed to start test Redis server: %v", err)
+	}
+	defer redisServer.Close()
+
+	client, err := NewRedisStorageClient(RedisStorageConfig{
+		Endpoint: redisServer.Addr(),
+		Prefix:   "persist_",
+	})
+	if err != nil {
+		t.Fatalf("Failed to create Redis client: %v", err)
+	}
+	defer client.Close(ctx)
+
+	if err := client.Set(ctx, "k", []byte("v")); err != nil {
+		t.Fatalf("set: %v", err)
+	}
+	if redisServer.TTL("persist_k") != 0 {
+		t.Fatalf("expected no TTL on audit key by default, got %v", redisServer.TTL("persist_k"))
+	}
+}
+
 func TestSQLStorageClient(t *testing.T) {
 	ctx := context.Background()
 	config := SQLStorageConfig{
-		Driver:     "sqlite3",
-		Datasource: ":memory:",
+		Driver:     "sqlite",
+		Datasource: "file:" + filepath.Join(t.TempDir(), "audit.db") + "?_pragma=foreign_keys(1)",
 		TableName:  "audit_logs",
 	}
 
@@ -114,6 +141,7 @@ func TestSQLStorageClient(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to create SQL client: %v", err)
 	}
+	defer client.Close(ctx)
 
 	key := "test_key"
 	value := []byte("test_value")
@@ -134,12 +162,53 @@ func TestSQLStorageClient(t *testing.T) {
 	if err := client.Delete(ctx, key); err != nil {
 		t.Fatalf("Failed to delete key: %v", err)
 	}
+
+	_, err = client.Get(ctx, key)
+	if err == nil {
+		t.Fatal("expected error after delete")
+	}
+}
+
+func TestSQLStorageClientPersistsAcrossReopen(t *testing.T) {
+	ctx := context.Background()
+	dbPath := filepath.Join(t.TempDir(), "reopen.db")
+	config := SQLStorageConfig{
+		Driver:     "sqlite",
+		Datasource: "file:" + dbPath,
+		TableName:  "audit_logs",
+	}
+
+	first, err := NewSQLStorageClient(config)
+	if err != nil {
+		t.Fatalf("create first client: %v", err)
+	}
+	if err := first.Set(ctx, "persist", []byte("yes")); err != nil {
+		t.Fatalf("set: %v", err)
+	}
+	if err := first.Close(ctx); err != nil {
+		t.Fatalf("close first: %v", err)
+	}
+
+	second, err := NewSQLStorageClient(config)
+	if err != nil {
+		t.Fatalf("create second client: %v", err)
+	}
+	defer second.Close(ctx)
+
+	got, err := second.Get(ctx, "persist")
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	if string(got) != "yes" {
+		t.Fatalf("expected persisted value, got %q", got)
+	}
 }
 
 func TestBoltDBStorageClient(t *testing.T) {
 	ctx := context.Background()
+	dbPath := filepath.Join(t.TempDir(), "audit.db")
 
-	client, err := NewBoltDBStorageClient("test_audit.db")
+	client, err := NewBoltDBStorageClient(dbPath)
 	if err != nil {
 		t.Fatalf("Failed to create BoltDB client: %v", err)
 	}
@@ -159,6 +228,36 @@ func TestBoltDBStorageClient(t *testing.T) {
 
 	if string(retrieved) != string(value) {
 		t.Errorf("Expected '%s', got '%s'", value, retrieved)
+	}
+}
+
+func TestBoltDBStorageClientPersistsAcrossReopen(t *testing.T) {
+	ctx := context.Background()
+	dbPath := filepath.Join(t.TempDir(), "reopen.db")
+
+	first, err := NewBoltDBStorageClient(dbPath)
+	if err != nil {
+		t.Fatalf("create first client: %v", err)
+	}
+	if err := first.Set(ctx, "persist", []byte("yes")); err != nil {
+		t.Fatalf("set: %v", err)
+	}
+	if err := first.Close(ctx); err != nil {
+		t.Fatalf("close first: %v", err)
+	}
+
+	second, err := NewBoltDBStorageClient(dbPath)
+	if err != nil {
+		t.Fatalf("create second client: %v", err)
+	}
+	defer second.Close(ctx)
+
+	got, err := second.Get(ctx, "persist")
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	if string(got) != "yes" {
+		t.Fatalf("expected persisted value, got %q", got)
 	}
 }
 

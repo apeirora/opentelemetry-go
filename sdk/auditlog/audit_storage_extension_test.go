@@ -5,6 +5,7 @@ package auditlog
 
 import (
 	"context"
+	"path/filepath"
 	"sync"
 	"testing"
 	"time"
@@ -170,32 +171,32 @@ func TestMultipleStorageTypes(t *testing.T) {
 	defer redisServer.Close()
 
 	storageTests := []struct {
-		name    string
-		setup   func() (AuditLogStore, error)
-		cleanup func()
+		name  string
+		setup func(*testing.T) (AuditLogStore, func(), error)
 	}{
 		{
 			name: "InMemory",
-			setup: func() (AuditLogStore, error) {
+			setup: func(*testing.T) (AuditLogStore, func(), error) {
 				client := NewSimpleKeyValueStorageClient()
-				return NewAuditLogStorageExtensionAdapter(client)
+				store, err := NewAuditLogStorageExtensionAdapter(client)
+				return store, func() { _ = client.Close(context.Background()) }, err
 			},
-			cleanup: func() {},
 		},
 		{
 			name: "BoltDB",
-			setup: func() (AuditLogStore, error) {
-				client, err := NewBoltDBStorageClient("./test_multi_storage.db")
+			setup: func(t *testing.T) (AuditLogStore, func(), error) {
+				dbPath := filepath.Join(t.TempDir(), "multi.db")
+				client, err := NewBoltDBStorageClient(dbPath)
 				if err != nil {
-					return nil, err
+					return nil, nil, err
 				}
-				return NewAuditLogStorageExtensionAdapter(client)
+				store, err := NewAuditLogStorageExtensionAdapter(client)
+				return store, func() { _ = client.Close(context.Background()) }, err
 			},
-			cleanup: func() {},
 		},
 		{
 			name: "Redis",
-			setup: func() (AuditLogStore, error) {
+			setup: func(*testing.T) (AuditLogStore, func(), error) {
 				config := RedisStorageConfig{
 					Endpoint:   redisServer.Addr(),
 					Password:   "",
@@ -205,35 +206,36 @@ func TestMultipleStorageTypes(t *testing.T) {
 				}
 				client, err := NewRedisStorageClient(config)
 				if err != nil {
-					return nil, err
+					return nil, nil, err
 				}
-				return NewAuditLogStorageExtensionAdapter(client)
+				store, err := NewAuditLogStorageExtensionAdapter(client)
+				return store, func() { _ = client.Close(context.Background()) }, err
 			},
-			cleanup: func() {},
 		},
 		{
 			name: "SQL",
-			setup: func() (AuditLogStore, error) {
+			setup: func(t *testing.T) (AuditLogStore, func(), error) {
 				config := SQLStorageConfig{
-					Driver:     "sqlite3",
-					Datasource: ":memory:",
+					Driver:     "sqlite",
+					Datasource: "file:" + filepath.Join(t.TempDir(), "multi.db"),
 					TableName:  "test_multi_storage",
 				}
 				client, err := NewSQLStorageClient(config)
 				if err != nil {
-					return nil, err
+					return nil, nil, err
 				}
-				return NewAuditLogStorageExtensionAdapter(client)
+				store, err := NewAuditLogStorageExtensionAdapter(client)
+				return store, func() { _ = client.Close(context.Background()) }, err
 			},
-			cleanup: func() {},
 		},
 	}
 
 	for _, tt := range storageTests {
 		t.Run(tt.name, func(t *testing.T) {
-			defer tt.cleanup()
-
-			store, err := tt.setup()
+			store, cleanup, err := tt.setup(t)
+			if cleanup != nil {
+				defer cleanup()
+			}
 			if err != nil {
 				t.Skipf("Skipping %s: setup failed: %v", tt.name, err)
 				return
@@ -298,16 +300,17 @@ func TestStorageTypeInteroperability(t *testing.T) {
 	memoryClient := NewSimpleKeyValueStorageClient()
 	memoryStore, _ := NewAuditLogStorageExtensionAdapter(memoryClient)
 
-	fileClient, err := NewBoltDBStorageClient("./test_interop.db")
+	fileClient, err := NewBoltDBStorageClient(filepath.Join(t.TempDir(), "interop.db"))
 	if err != nil {
 		t.Skipf("Skipping interop test: file storage unavailable: %v", err)
 		return
 	}
+	defer fileClient.Close(ctx)
 	fileStore, _ := NewAuditLogStorageExtensionAdapter(fileClient)
 
 	sqlConfig := SQLStorageConfig{
-		Driver:     "sqlite3",
-		Datasource: ":memory:",
+		Driver:     "sqlite",
+		Datasource: "file:" + filepath.Join(t.TempDir(), "interop_sql.db"),
 		TableName:  "test_interop",
 	}
 	sqlClient, err := NewSQLStorageClient(sqlConfig)
@@ -315,6 +318,7 @@ func TestStorageTypeInteroperability(t *testing.T) {
 		t.Skipf("Skipping interop test: SQL storage unavailable: %v", err)
 		return
 	}
+	defer sqlClient.Close(ctx)
 	sqlStore, _ := NewAuditLogStorageExtensionAdapter(sqlClient)
 
 	record := &Record{}
@@ -361,55 +365,59 @@ func TestProcessorWithDifferentStorages(t *testing.T) {
 
 	storageConfigs := []struct {
 		name  string
-		store AuditLogStore
+		setup func(*testing.T) (AuditLogStore, func(), error)
 	}{
 		{
 			name: "Memory",
-			store: func() AuditLogStore {
+			setup: func(*testing.T) (AuditLogStore, func(), error) {
 				client := NewSimpleKeyValueStorageClient()
-				adapter, _ := NewAuditLogStorageExtensionAdapter(client)
-				return adapter
-			}(),
+				store, err := NewAuditLogStorageExtensionAdapter(client)
+				return store, func() { _ = client.Close(context.Background()) }, err
+			},
 		},
 		{
 			name: "File",
-			store: func() AuditLogStore {
-				client, err := NewBoltDBStorageClient("./test_processor.db")
+			setup: func(t *testing.T) (AuditLogStore, func(), error) {
+				client, err := NewBoltDBStorageClient(filepath.Join(t.TempDir(), "processor.db"))
 				if err != nil {
-					return nil
+					return nil, nil, err
 				}
-				adapter, _ := NewAuditLogStorageExtensionAdapter(client)
-				return adapter
-			}(),
+				store, err := NewAuditLogStorageExtensionAdapter(client)
+				return store, func() { _ = client.Close(context.Background()) }, err
+			},
 		},
 		{
 			name: "SQL",
-			store: func() AuditLogStore {
+			setup: func(t *testing.T) (AuditLogStore, func(), error) {
 				config := SQLStorageConfig{
-					Driver:     "sqlite3",
-					Datasource: ":memory:",
+					Driver:     "sqlite",
+					Datasource: "file:" + filepath.Join(t.TempDir(), "processor.db"),
 					TableName:  "test_processor",
 				}
 				client, err := NewSQLStorageClient(config)
 				if err != nil {
-					return nil
+					return nil, nil, err
 				}
-				adapter, _ := NewAuditLogStorageExtensionAdapter(client)
-				return adapter
-			}(),
+				store, err := NewAuditLogStorageExtensionAdapter(client)
+				return store, func() { _ = client.Close(context.Background()) }, err
+			},
 		},
 	}
 
 	for _, tc := range storageConfigs {
 		t.Run(tc.name, func(t *testing.T) {
-			if tc.store == nil {
-				t.Skipf("Skipping %s: store not available", tc.name)
+			store, cleanup, err := tc.setup(t)
+			if err != nil {
+				t.Skipf("Skipping %s: store not available: %v", tc.name, err)
 				return
+			}
+			if cleanup != nil {
+				defer cleanup()
 			}
 
 			exporter := &mockStorageExporter{records: []Record{}}
 
-			builder, err := NewAuditLogProcessorBuilder(exporter, tc.store)
+			builder, err := NewAuditLogProcessorBuilder(exporter, store)
 			if err != nil {
 				t.Fatalf("NewAuditLogProcessorBuilder: %v", err)
 			}
@@ -420,7 +428,9 @@ func TestProcessorWithDifferentStorages(t *testing.T) {
 			if err != nil {
 				t.Fatalf("Failed to create processor with %s storage: %v", tc.name, err)
 			}
-			defer processor.Shutdown(ctx)
+			defer func() {
+				_ = processor.Shutdown(ctx)
+			}()
 
 			for i := 0; i < 5; i++ {
 				record := &Record{}

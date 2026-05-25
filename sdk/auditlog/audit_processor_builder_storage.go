@@ -79,7 +79,7 @@ func (b *AuditLogProcessorBuilder) WithRedisStorage(opts ...RedisStorageOption) 
 		storageType:     StorageTypeRedis,
 		redisEndpoint:   "localhost:6379",
 		redisPrefix:     "otel_audit_",
-		redisExpiration: 24 * time.Hour,
+		redisExpiration: 0,
 		clientName:      "audit_processor",
 	}
 	
@@ -113,7 +113,7 @@ func WithSQLTable(tableName string) SQLStorageOption {
 func (b *AuditLogProcessorBuilder) WithSQLStorage(opts ...SQLStorageOption) *AuditLogProcessorBuilder {
 	b.storageConfig = &storageConfig{
 		storageType:  StorageTypeSQL,
-		sqlDriver:    "sqlite3",
+		sqlDriver:     "sqlite",
 		sqlDatasource: ":memory:",
 		sqlTableName: "audit_logs",
 		clientName:   "audit_processor",

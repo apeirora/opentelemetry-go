@@ -166,6 +166,7 @@ func main() {
 		auditlog.WithAuditRecordProcessor(processor),
 		auditlog.WithAuditHashAlgorithm("sha256"),
 		auditlog.WithAuditHMACVerificationKeyFromEnvironment(),
+		auditlog.WithAuditRecordSigning(auditlog.AuditIntegrityHMAC, auditlog.AuditSignContentBody),
 	)
 
 	logger := provider.Logger("testapp", auditlog.WithAuditLoggerVersion("0.0.1"))

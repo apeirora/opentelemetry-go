@@ -137,8 +137,8 @@ func sqlExample(ctx context.Context) {
 
 	extension, err := sdklog.NewStorageExtension(
 		sdklog.WithSQLStorage(
-			"sqlite3",
-			":memory:",
+			"sqlite",
+			"file:audit_example.db",
 			sdklog.WithSQLTableName("audit_storage"),
 		),
 	)
@@ -163,7 +163,7 @@ func sqlExample(ctx context.Context) {
 
 	fmt.Println("✅ SQL storage extension created")
 	fmt.Println("   Type: SQL Database (SQLite)")
-	fmt.Println("   Driver: sqlite3")
+	fmt.Println("   Driver: sqlite")
 	fmt.Println("   Use Case: Enterprise, compliance, SQL queries")
 	fmt.Printf("   Adapter: %T\n", adapter)
 }

@@ -42,12 +42,12 @@ type canonicalAuditRecord struct {
 	PrevHash      string               `json:"prev_hash,omitempty"`
 }
 
-func signAuditRecordHMAC(record AuditRecord, key []byte, configuredHashAlgorithm string) (AuditRecord, error) {
+func signAuditRecordHMAC(record AuditRecord, key []byte, configuredHashAlgorithm string, clearHash bool) (AuditRecord, error) {
 	if len(key) == 0 {
 		return AuditRecord{}, fmt.Errorf("hmac key is required for signing")
 	}
 	alg := resolveHashAlgorithm(record, configuredHashAlgorithm)
-	payload, err := signingPayload(record)
+	payload, err := signingPayload(record, "")
 	if err != nil {
 		return AuditRecord{}, err
 	}
@@ -57,8 +57,40 @@ func signAuditRecordHMAC(record AuditRecord, key []byte, configuredHashAlgorithm
 	}
 	mac := hmac.New(h, key)
 	_, _ = mac.Write(payload)
-	record.Hash = ""
+	if clearHash {
+		record.Hash = ""
+	}
 	record.HMAC = strings.ToLower(hex.EncodeToString(mac.Sum(nil)))
+	return record, nil
+}
+
+func signAuditRecordHash(record AuditRecord, configuredHashAlgorithm string) (AuditRecord, error) {
+	alg := resolveHashAlgorithm(record, configuredHashAlgorithm)
+	payload, err := signingPayload(record, "")
+	if err != nil {
+		return AuditRecord{}, err
+	}
+	hashHex, err := computeHashHex(alg, payload)
+	if err != nil {
+		return AuditRecord{}, err
+	}
+	record.Hash = strings.ToLower(hashHex)
+	return record, nil
+}
+
+func signAuditRecordSignature(record AuditRecord, signer AuditSignatureSigner) (AuditRecord, error) {
+	if signer == nil {
+		return AuditRecord{}, fmt.Errorf("signature signer is required")
+	}
+	payload, err := signingPayload(record, "")
+	if err != nil {
+		return AuditRecord{}, err
+	}
+	sig, err := signer(record, payload)
+	if err != nil {
+		return AuditRecord{}, err
+	}
+	record.Signature = sig
 	return record, nil
 }
 
@@ -67,12 +99,22 @@ func verifyAuditIntegrity(
 	hmacKey []byte,
 	signatureVerifier AuditSignatureVerifier,
 	configuredHashAlgorithm string,
+	defaultSignContent AuditSignContent,
 ) error {
-	payload, err := signingPayload(record)
+	payload, err := signingPayload(record, defaultSignContent)
 	if err != nil {
 		return err
 	}
 	alg := resolveHashAlgorithm(record, configuredHashAlgorithm)
+	if record.Hash != "" {
+		hashHex, herr := computeHashHex(alg, payload)
+		if herr != nil {
+			return newAuditStatusError(AuditErrorInvalidRequest, "invalid hash algorithm", false, herr)
+		}
+		if !hmac.Equal([]byte(strings.ToLower(hashHex)), []byte(strings.ToLower(record.Hash))) {
+			return newAuditStatusError(AuditErrorInvalidRequest, "audit hash verification failed", false, nil)
+		}
+	}
 	if record.HMAC != "" {
 		if len(hmacKey) == 0 {
 			return newAuditStatusError(AuditErrorInvalidRequest, "audit hmac present but no verification key configured", false, nil)
@@ -92,11 +134,11 @@ func verifyAuditIntegrity(
 		if signatureVerifier == nil {
 			return newAuditStatusError(AuditErrorInvalidRequest, "audit signature present but no signature verifier configured", false, nil)
 		}
-		canonical, cerr := canonicalizeAuditRecord(record)
-		if cerr != nil {
-			return cerr
+		payload, perr := signingPayload(record, defaultSignContent)
+		if perr != nil {
+			return perr
 		}
-		if err := signatureVerifier(record, canonical); err != nil {
+		if err := signatureVerifier(record, payload); err != nil {
 			return newAuditStatusError(AuditErrorInvalidRequest, "audit signature verification failed", false, err)
 		}
 	}
@@ -164,9 +206,9 @@ func hmacHasherForAlgorithm(algorithm string) (func() stdhash.Hash, error) {
 	}
 }
 
-func signContentMode(record AuditRecord) string {
+func signContentMode(record AuditRecord, providerDefault AuditSignContent) AuditSignContent {
 	if mode := strings.ToLower(strings.TrimSpace(record.SignContent)); mode != "" {
-		return mode
+		return normalizeAuditSignContent(mode)
 	}
 	var mode string
 	record.WalkAttributes(func(kv log.KeyValue) bool {
@@ -180,16 +222,46 @@ func signContentMode(record AuditRecord) string {
 		}
 		return false
 	})
-	return strings.ToLower(mode)
+	if mode != "" {
+		return normalizeAuditSignContent(mode)
+	}
+	if providerDefault != "" {
+		return providerDefault
+	}
+	return AuditSignContentMeta
 }
 
-func signingPayload(record AuditRecord) ([]byte, error) {
-	switch signContentMode(record) {
-	case "body":
+func signingPayload(record AuditRecord, providerDefault AuditSignContent) ([]byte, error) {
+	switch signContentMode(record, providerDefault) {
+	case AuditSignContentBody:
 		return []byte(record.Body().String()), nil
+	case AuditSignContentAttr:
+		return canonicalizeAuditAttributes(record)
 	default:
 		return canonicalizeAuditRecord(record)
 	}
+}
+
+func canonicalizeAuditAttributes(record AuditRecord) ([]byte, error) {
+	attrs := make([]canonicalAttribute, 0, record.AttributesLen())
+	record.WalkAttributes(func(kv log.KeyValue) bool {
+		attrs = append(attrs, canonicalAttribute{
+			Key:   string(kv.Key),
+			Value: kv.Value.String(),
+		})
+		return true
+	})
+	sort.Slice(attrs, func(i, j int) bool {
+		if attrs[i].Key == attrs[j].Key {
+			return attrs[i].Value < attrs[j].Value
+		}
+		return attrs[i].Key < attrs[j].Key
+	})
+	data, err := json.Marshal(attrs)
+	if err != nil {
+		return nil, fmt.Errorf("failed to canonicalize audit attributes: %w", err)
+	}
+	return data, nil
 }
 
 func canonicalizeAuditRecord(record AuditRecord) ([]byte, error) {
