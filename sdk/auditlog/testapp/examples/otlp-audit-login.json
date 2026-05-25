@@ -1,0 +1,39 @@
+{
+  "resourceLogs": [
+    {
+      "scopeLogs": [
+        {
+          "scope": {
+            "name": "testapp",
+            "version": "0.0.1"
+          },
+          "logRecords": [
+            {
+              "timeUnixNano": "1779266406878700152",
+              "observedTimeUnixNano": "1779266406878700152",
+              "severityNumber": 9,
+              "severityText": "INFO",
+              "eventName": "policy.deny",
+              "body": {
+                "stringValue": "{\"event\":\"policy.deny\",\"n\":2,\"id\":\"rec-f48acb64-551a-4f87-8143-a4f41afc1aaf\"}"
+              },
+              "attributes": [
+                { "key": "audit.record_id", "value": { "stringValue": "rec-f48acb64-551a-4f87-8143-a4f41afc1aaf" } },
+                { "key": "base", "value": { "stringValue": "testapp" } },
+                { "key": "audit.actor", "value": { "stringValue": "alice@example.com" } },
+                { "key": "audit.actor_type", "value": { "stringValue": "user" } },
+                { "key": "audit.action", "value": { "stringValue": "access" } },
+                { "key": "audit.resource", "value": { "stringValue": "/api/widgets" } },
+                { "key": "audit.outcome", "value": { "stringValue": "success" } },
+                { "key": "audit.schema_version", "value": { "stringValue": "1.0" } },
+                { "key": "audit.source_ip", "value": { "stringValue": "192.0.2.12" } },
+                { "key": "sign_content", "value": { "stringValue": "body" } },
+                { "key": "audit.hmac", "value": { "stringValue": "60603e3ee175c435923283b002449bd44f5ff7e2dface05ccf97ac98e01a0771" } }
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

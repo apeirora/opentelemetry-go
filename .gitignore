@@ -8,7 +8,12 @@ venv/
 .vscode/
 *.iml
 *.so
+*.exe
 coverage.*
+sdk/auditlog/coverage
+sdk/auditlog/testapp.exe
+sdk/auditlog/testapp/auditlog-demo
+sdk/auditlog/testapp/examples/_hmac_brute/
 go.work
 go.work.sum
 
