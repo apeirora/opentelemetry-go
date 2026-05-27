@@ -28,9 +28,11 @@
 //
 //	go run ./testapp -hmac-key-file C:\...\sdk\auditlog\testapp\dev_hmac_key.txt
 //
-// Or with a file-backed store (async durability demo):
+// Integrity uses HMAC (dev_hmac_key.txt), SHA-256 hash, and certificate signature (dev_sign_cert.pem / dev_sign_key.pem).
+// Override signing PEMs with -sign-cert-file and -sign-key-file. Regenerate dev certs: go run ./testapp/examples/certgen
 //
-//	go run ./testapp -filestore /tmp/auditlog-demo
+// Delivery is synchronous (direct export on emit, WaitOnExport). For async store-and-retry
+// with -filestore durability, change SetDeliveryMode to AuditDeliveryModeAsyncStoreRetry in main.
 //
 // Each emitted audit record gets a unique audit.record_id (UUID) so new runs do not collide
 // with rows still in a file-backed store from a previous run.
@@ -42,6 +44,10 @@
 // Use one event name for every record:
 //
 //	go run ./testapp -count 5 -event app.order.placed
+//
+// Reject every 3rd emit (invalid integrity proofs, status 400):
+//
+//	go run ./testapp -count 10 -reject-every 3
 //
 // Enable startup replay debug logs:
 //
@@ -79,11 +85,21 @@ func main() {
 	otlpEndpoint := flag.String("otlp-endpoint", "", "if non-empty, export logs with OTLP HTTP to this URL (e.g. http://localhost:4318 or http://localhost:4318/auditlogs); path omitted uses /auditlogs; empty writes JSON lines to stdout")
 	debugReplay := flag.Bool("debug-replay", false, "if set, enable audit startup replay debug logs (sets OTEL_AUDITLOG_DEBUG_REPLAY=1)")
 	hmacKeyFile := flag.String("hmac-key-file", "", "path to HMAC key file; when OTEL_AUDITLOG_HMAC_KEY* are unset, overrides auto-discovery of testapp/dev_hmac_key.txt")
+	signCertFile := flag.String("sign-cert-file", "", "path to PEM certificate for audit.signature; default testapp/dev_sign_cert.pem")
+	signKeyFile := flag.String("sign-key-file", "", "path to PEM private key for signing; default testapp/dev_sign_key.pem")
+	rejectEvery := flag.Int("reject-every", 0, "if > 0, every Nth emit (1-based) uses invalid integrity proofs so the provider rejects it (status 400)")
 	flag.Parse()
 
 	if *count < 1 {
 		fmt.Fprintln(os.Stderr, "count must be >= 1")
 		os.Exit(2)
+	}
+	if *rejectEvery < 0 {
+		fmt.Fprintln(os.Stderr, "reject-every must be >= 0")
+		os.Exit(2)
+	}
+	if *rejectEvery > 0 {
+		fmt.Fprintf(os.Stderr, "testapp: every %d record(s) will use invalid integrity proofs (expected status 400)\n", *rejectEvery)
 	}
 	if *debugReplay {
 		_ = os.Setenv("OTEL_AUDITLOG_DEBUG_REPLAY", "1")
@@ -115,6 +131,23 @@ func main() {
 			absPath, auditlog.EnvAuditlogHMACKeyFile, auditlog.EnvAuditlogHMACKey)
 	}
 
+	certPath, keyPath, err := resolveSignCertKeyPaths(*signCertFile, *signKeyFile)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "testapp: %v\n", err)
+		os.Exit(2)
+	}
+	signatureSigner, err := auditlog.NewAuditCertificateSignatureSignerFromFiles(certPath, keyPath)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "testapp: signature signer: %v\n", err)
+		os.Exit(2)
+	}
+	signatureVerifier, err := auditlog.NewAuditCertificateSignatureVerifierFromFiles(certPath)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "testapp: signature verifier: %v\n", err)
+		os.Exit(2)
+	}
+	fmt.Fprintf(os.Stderr, "testapp: signature cert %s key %s\n", certPath, keyPath)
+
 	exporter, err := buildExporter(*otlpEndpoint)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "exporter: %v\n", err)
@@ -134,7 +167,7 @@ func main() {
 		}
 		pending, perr := store.GetAll(context.Background())
 		if perr == nil && len(pending) > 0 {
-			fmt.Fprintf(os.Stderr, "testapp: file store contains %d pending record(s); processor will export them first\n", len(pending))
+			fmt.Fprintf(os.Stderr, "testapp: file store contains %d pending record(s) from a prior async run; sync_direct does not replay them (switch delivery mode to async_store_retry to drain)\n", len(pending))
 		}
 		if fi, serr := os.Stat(*fileStoreDir); serr == nil && !fi.IsDir() {
 			fmt.Fprintf(os.Stderr, "testapp: if this file still shows old lines after \"delivered\", close it in your editor (Windows locks) or use -filestore <directory> (data goes to <directory>\\audit.log)\n")
@@ -142,7 +175,7 @@ func main() {
 	} else {
 		store = auditlog.NewAuditLogInMemoryStore()
 		if strings.TrimSpace(*otlpEndpoint) != "" {
-			fmt.Fprintf(os.Stderr, "testapp: -filestore not set; pending audit records are only in memory (lost on exit). Use -filestore <dir> to persist across failed exports and restarts.\n")
+			fmt.Fprintf(os.Stderr, "testapp: sync_direct delivery; records are not persisted to a store. Use async_store_retry with -filestore for durability across failed exports and restarts.\n")
 		}
 	}
 
@@ -152,9 +185,8 @@ func main() {
 		os.Exit(1)
 	}
 	processor, err := builder.
+		SetDeliveryMode(auditlog.AuditDeliveryModeSyncDirect).
 		SetWaitOnExport(true).
-		SetScheduleDelay(200 * time.Millisecond).
-		SetMaxExportBatchSize(32).
 		SetExporterTimeout(10 * time.Second).
 		Build()
 	if err != nil {
@@ -162,11 +194,14 @@ func main() {
 		os.Exit(1)
 	}
 
+	integrityFields := auditlog.AuditIntegrityHMAC | auditlog.AuditIntegrityHash | auditlog.AuditIntegritySignature
 	provider := auditlog.NewAuditLoggerProvider(
 		auditlog.WithAuditRecordProcessor(processor),
 		auditlog.WithAuditHashAlgorithm("sha256"),
 		auditlog.WithAuditHMACVerificationKeyFromEnvironment(),
-		auditlog.WithAuditRecordSigning(auditlog.AuditIntegrityHMAC, auditlog.AuditSignContentBody),
+		auditlog.WithAuditRecordSigning(integrityFields, auditlog.AuditSignContentBody),
+		auditlog.WithAuditSignatureSigner(signatureSigner),
+		auditlog.WithAuditSignatureVerifier(signatureVerifier),
 	)
 
 	logger := provider.Logger("testapp", auditlog.WithAuditLoggerVersion("0.0.1"))
@@ -196,6 +231,12 @@ func main() {
 		}
 
 		rec := buildAuditRecord(name, action, ip, i)
+		if *rejectEvery > 0 && (i+1)%*rejectEvery == 0 {
+			rec = malformedAuditRecord(rec)
+			if !*quiet {
+				fmt.Fprintf(os.Stderr, "testapp: malformed integrity injected for record_id=%s (emit %d, every %d)\n", rec.RecordID, i+1, *rejectEvery)
+			}
+		}
 		res := logger.EmitWithResult(ctx, rec)
 		if !*quiet {
 			fmt.Printf("emit result: status=%d %s record_id=%s reason=%q\n", res.StatusCode, res.Status, rec.RecordID, res.Reason)
@@ -212,7 +253,30 @@ func main() {
 	fmt.Println("done.")
 }
 
-func resolveDefaultDevHMACKeyPath() string {
+func resolveSignCertKeyPaths(certFlag, keyFlag string) (string, string, error) {
+	certPath := strings.TrimSpace(certFlag)
+	keyPath := strings.TrimSpace(keyFlag)
+	if certPath == "" {
+		certPath = resolveDefaultDevFile("dev_sign_cert.pem")
+	}
+	if keyPath == "" {
+		keyPath = resolveDefaultDevFile("dev_sign_key.pem")
+	}
+	if certPath == "" || keyPath == "" {
+		return "", "", fmt.Errorf("no signing cert/key; use -sign-cert-file and -sign-key-file, or run from a directory where testapp/dev_sign_*.pem can be found (go run ./testapp/examples/certgen to generate)")
+	}
+	certAbs, err := filepath.Abs(certPath)
+	if err != nil {
+		return "", "", fmt.Errorf("sign cert path: %w", err)
+	}
+	keyAbs, err := filepath.Abs(keyPath)
+	if err != nil {
+		return "", "", fmt.Errorf("sign key path: %w", err)
+	}
+	return certAbs, keyAbs, nil
+}
+
+func resolveDefaultDevFile(name string) string {
 	try := func(p string) string {
 		p = filepath.Clean(p)
 		st, err := os.Stat(p)
@@ -223,10 +287,10 @@ func resolveDefaultDevHMACKeyPath() string {
 	}
 	if exe, err := os.Executable(); err == nil {
 		exeDir := filepath.Dir(exe)
-		if p := try(filepath.Join(exeDir, "dev_hmac_key.txt")); p != "" {
+		if p := try(filepath.Join(exeDir, name)); p != "" {
 			return p
 		}
-		if p := try(filepath.Join(exeDir, "testapp", "dev_hmac_key.txt")); p != "" {
+		if p := try(filepath.Join(exeDir, "testapp", name)); p != "" {
 			return p
 		}
 	}
@@ -235,9 +299,9 @@ func resolveDefaultDevHMACKeyPath() string {
 		return ""
 	}
 	relCandidates := []string{
-		filepath.Join("testapp", "dev_hmac_key.txt"),
-		"dev_hmac_key.txt",
-		filepath.Join("sdk", "auditlog", "testapp", "dev_hmac_key.txt"),
+		filepath.Join("testapp", name),
+		name,
+		filepath.Join("sdk", "auditlog", "testapp", name),
 	}
 	for _, rel := range relCandidates {
 		if p := try(filepath.Join(wd, rel)); p != "" {
@@ -245,6 +309,10 @@ func resolveDefaultDevHMACKeyPath() string {
 		}
 	}
 	return ""
+}
+
+func resolveDefaultDevHMACKeyPath() string {
+	return resolveDefaultDevFile("dev_hmac_key.txt")
 }
 
 func buildExporter(otlpURL string) (auditlog.Exporter, error) {
@@ -355,6 +423,13 @@ func formatLogValue(v log.Value) string {
 	default:
 		return v.String()
 	}
+}
+
+func malformedAuditRecord(rec auditlog.AuditRecord) auditlog.AuditRecord {
+	rec.HMAC = "0000000000000000000000000000000000000000000000000000000000000000"
+	rec.Hash = "0000000000000000000000000000000000000000000000000000000000000000"
+	rec.Signature = "invalid-audit-signature"
+	return rec
 }
 
 func buildAuditRecord(eventName, action, sourceIP string, iter int) auditlog.AuditRecord {

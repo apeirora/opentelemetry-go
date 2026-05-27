@@ -54,6 +54,61 @@ func NewAuditCertificateSignatureSignerFromFiles(certPath, keyPath string) (Audi
 	return NewAuditCertificateSignatureSigner(certPEM, keyPEM)
 }
 
+func NewAuditCertificateSignatureVerifier(certPEM []byte) (AuditSignatureVerifier, error) {
+	cert, err := parseCertificatePEM(certPEM)
+	if err != nil {
+		return nil, err
+	}
+	switch pub := cert.PublicKey.(type) {
+	case *rsa.PublicKey:
+		return func(record AuditRecord, payload []byte) error {
+			sigBytes, err := base64.StdEncoding.DecodeString(record.Signature)
+			if err != nil {
+				return fmt.Errorf("auditlog: decode signature: %w", err)
+			}
+			sum := sha256.Sum256(payload)
+			if err := rsa.VerifyPKCS1v15(pub, crypto.SHA256, sum[:], sigBytes); err != nil {
+				return fmt.Errorf("auditlog: signature verification failed: %w", err)
+			}
+			return nil
+		}, nil
+	case *ecdsa.PublicKey:
+		return func(record AuditRecord, payload []byte) error {
+			sigBytes, err := base64.StdEncoding.DecodeString(record.Signature)
+			if err != nil {
+				return fmt.Errorf("auditlog: decode signature: %w", err)
+			}
+			sum := sha256.Sum256(payload)
+			if !ecdsa.VerifyASN1(pub, sum[:], sigBytes) {
+				return fmt.Errorf("auditlog: signature verification failed")
+			}
+			return nil
+		}, nil
+	default:
+		return nil, fmt.Errorf("auditlog: unsupported certificate public key type %T", cert.PublicKey)
+	}
+}
+
+func NewAuditCertificateSignatureVerifierFromFiles(certPath string) (AuditSignatureVerifier, error) {
+	certPEM, err := os.ReadFile(certPath)
+	if err != nil {
+		return nil, fmt.Errorf("auditlog: read certificate %q: %w", certPath, err)
+	}
+	return NewAuditCertificateSignatureVerifier(certPEM)
+}
+
+func parseCertificatePEM(pemBytes []byte) (*x509.Certificate, error) {
+	block, _ := pem.Decode(pemBytes)
+	if block == nil {
+		return nil, fmt.Errorf("auditlog: no PEM block in certificate")
+	}
+	cert, err := x509.ParseCertificate(block.Bytes)
+	if err != nil {
+		return nil, fmt.Errorf("auditlog: parse certificate: %w", err)
+	}
+	return cert, nil
+}
+
 func parsePrivateKeyPEM(pemBytes []byte) (crypto.PrivateKey, error) {
 	block, _ := pem.Decode(pemBytes)
 	if block == nil {

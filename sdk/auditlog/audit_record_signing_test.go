@@ -8,10 +8,8 @@ import (
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
-	"crypto/sha256"
 	"crypto/x509"
 	"crypto/x509/pkix"
-	"encoding/base64"
 	"encoding/pem"
 	"math/big"
 	"testing"
@@ -159,21 +157,9 @@ func testCertSignerAndVerifier(t *testing.T) (AuditSignatureSigner, AuditSignatu
 	if err != nil {
 		return nil, nil, err
 	}
-	pub := key.PublicKey
-	verifier := func(record AuditRecord, canonicalPayload []byte) error {
-		sigBytes, err := base64.StdEncoding.DecodeString(record.Signature)
-		if err != nil {
-			return err
-		}
-		sum := sha256.Sum256(canonicalPayload)
-		if !ecdsa.VerifyASN1(&pub, sum[:], sigBytes) {
-			return errInvalidSignature{}
-		}
-		return nil
+	verifier, err := NewAuditCertificateSignatureVerifier(certPEM)
+	if err != nil {
+		return nil, nil, err
 	}
 	return signer, verifier, nil
 }
-
-type errInvalidSignature struct{}
-
-func (errInvalidSignature) Error() string { return "invalid signature" }
