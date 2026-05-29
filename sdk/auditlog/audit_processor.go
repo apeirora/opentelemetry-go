@@ -4,7 +4,6 @@
 package auditlog
 
 import (
-	"container/heap"
 	"context"
 	"fmt"
 	"math"
@@ -14,7 +13,6 @@ import (
 	"time"
 
 	"go.opentelemetry.io/otel"
-	"go.opentelemetry.io/otel/log"
 )
 
 type AuditException struct {
@@ -105,58 +103,10 @@ func DefaultAuditLogProcessorConfig(exporter Exporter, store AuditLogStore) Audi
 	}
 }
 
-type PriorityRecord struct {
-	Record   Record
-	Priority int
-}
-
-type PriorityQueue []PriorityRecord
-
-func (pq PriorityQueue) Len() int { return len(pq) }
-
-func (pq PriorityQueue) Less(i, j int) bool {
-	return pq[i].Priority > pq[j].Priority
-}
-
-func (pq PriorityQueue) Swap(i, j int) {
-	pq[i], pq[j] = pq[j], pq[i]
-}
-
-func (pq *PriorityQueue) Push(x interface{}) {
-	*pq = append(*pq, x.(PriorityRecord))
-}
-
-func (pq *PriorityQueue) Pop() interface{} {
-	old := *pq
-	n := len(old)
-	item := old[n-1]
-	*pq = old[0 : n-1]
-	return item
-}
-
-func getSeverityPriority(severity log.Severity) int {
-	switch severity {
-	case log.SeverityTrace, log.SeverityTrace2, log.SeverityTrace3, log.SeverityTrace4:
-		return 1
-	case log.SeverityDebug, log.SeverityDebug2, log.SeverityDebug3, log.SeverityDebug4:
-		return 2
-	case log.SeverityInfo, log.SeverityInfo2, log.SeverityInfo3, log.SeverityInfo4:
-		return 3
-	case log.SeverityWarn, log.SeverityWarn2, log.SeverityWarn3, log.SeverityWarn4:
-		return 4
-	case log.SeverityError, log.SeverityError2, log.SeverityError3, log.SeverityError4:
-		return 5
-	case log.SeverityFatal, log.SeverityFatal2, log.SeverityFatal3, log.SeverityFatal4:
-		return 6
-	default:
-		return 0
-	}
-}
-
 type AuditLogProcessor struct {
 	config AuditLogProcessorConfig
 
-	queue      *PriorityQueue
+	queue      []Record
 	queueMutex sync.Mutex
 
 	shutdown atomic.Bool
@@ -182,10 +132,6 @@ func nonCancelContext(ctx context.Context) context.Context {
 	return context.WithoutCancel(ctx)
 }
 
-func (p *AuditLogProcessor) Enabled(ctx context.Context, param AuditEnabledParameters) bool {
-	return !p.shutdown.Load()
-}
-
 func NewAuditLogProcessor(config AuditLogProcessorConfig) (*AuditLogProcessor, error) {
 	if config.Exporter == nil {
 		return nil, fmt.Errorf("exporter cannot be nil")
@@ -205,11 +151,8 @@ func NewAuditLogProcessor(config AuditLogProcessorConfig) (*AuditLogProcessor, e
 
 	processor := &AuditLogProcessor{
 		config:   config,
-		queue:    &PriorityQueue{},
 		stopChan: make(chan struct{}),
 	}
-
-	heap.Init(processor.queue)
 
 	if config.DeliveryMode == AuditDeliveryModeAsyncStoreRetry {
 		processor.startBackgroundProcessing()
@@ -356,11 +299,7 @@ func (p *AuditLogProcessor) invokeExport(message string) {
 
 func (p *AuditLogProcessor) enqueueLoadedRecord(record Record) error {
 	p.queueMutex.Lock()
-	priority := getSeverityPriority(record.Severity())
-	heap.Push(p.queue, PriorityRecord{
-		Record:   record,
-		Priority: priority,
-	})
+	p.queue = append(p.queue, record)
 	p.queueMutex.Unlock()
 	return nil
 }
@@ -453,12 +392,8 @@ func (p *AuditLogProcessor) OnEmit(ctx context.Context, record *Record) error {
 	}
 
 	p.queueMutex.Lock()
-	priority := getSeverityPriority(record.Severity())
-	heap.Push(p.queue, PriorityRecord{
-		Record:   *record,
-		Priority: priority,
-	})
-	queueSize := p.queue.Len()
+	p.queue = append(p.queue, *record)
+	queueSize := len(p.queue)
 	p.queueMutex.Unlock()
 
 	if queueSize >= p.config.MaxExportBatchSize {
@@ -474,7 +409,7 @@ func (p *AuditLogProcessor) exportLogs(ignoreRetryDelay bool) error {
 	}
 
 	p.queueMutex.Lock()
-	if p.queue.Len() == 0 {
+	if len(p.queue) == 0 {
 		p.queueMutex.Unlock()
 		return nil
 	}
@@ -493,13 +428,12 @@ func (p *AuditLogProcessor) exportLogs(ignoreRetryDelay bool) error {
 	var recordsToExport []Record
 	p.queueMutex.Lock()
 	batchSize := p.config.MaxExportBatchSize
-	if batchSize > p.queue.Len() {
-		batchSize = p.queue.Len()
+	if batchSize > len(p.queue) {
+		batchSize = len(p.queue)
 	}
-
-	for i := 0; i < batchSize && p.queue.Len() > 0; i++ {
-		priorityRecord := heap.Pop(p.queue).(PriorityRecord)
-		recordsToExport = append(recordsToExport, priorityRecord.Record)
+	if batchSize > 0 {
+		recordsToExport = append(recordsToExport, p.queue[:batchSize]...)
+		p.queue = p.queue[batchSize:]
 	}
 	p.queueMutex.Unlock()
 
@@ -620,13 +554,7 @@ func (p *AuditLogProcessor) handleExportFailure(records []Record, cause error) {
 	})
 
 	p.queueMutex.Lock()
-	for _, record := range records {
-		priority := getSeverityPriority(record.Severity())
-		heap.Push(p.queue, PriorityRecord{
-			Record:   record,
-			Priority: priority,
-		})
-	}
+	p.queue = append(p.queue, records...)
 	p.queueMutex.Unlock()
 }
 
@@ -640,7 +568,7 @@ func (p *AuditLogProcessor) ForceFlush(ctx context.Context) error {
 
 	for {
 		p.queueMutex.Lock()
-		queueLen := p.queue.Len()
+		queueLen := len(p.queue)
 		p.queueMutex.Unlock()
 
 		if queueLen == 0 {
@@ -652,7 +580,7 @@ func (p *AuditLogProcessor) ForceFlush(ctx context.Context) error {
 		retryAfter := p.currentRetryAttempt.Load()
 
 		p.queueMutex.Lock()
-		queueAfter := p.queue.Len()
+		queueAfter := len(p.queue)
 		p.queueMutex.Unlock()
 
 		if exportErr != nil {
@@ -704,7 +632,7 @@ func (p *AuditLogProcessor) Shutdown(ctx context.Context) error {
 func (p *AuditLogProcessor) GetQueueSize() int {
 	p.queueMutex.Lock()
 	defer p.queueMutex.Unlock()
-	return p.queue.Len()
+	return len(p.queue)
 }
 
 func (p *AuditLogProcessor) GetRetryAttempts() int {

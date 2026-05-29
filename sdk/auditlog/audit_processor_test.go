@@ -335,7 +335,7 @@ func TestAuditLogProcessor(t *testing.T) {
 		}
 	})
 
-	t.Run("Priority Queue Ordering", func(t *testing.T) {
+	t.Run("FIFO Queue Ordering", func(t *testing.T) {
 		exporter := NewMockExporter()
 		store := NewAuditLogInMemoryStore()
 		exceptionHandler := NewMockExceptionHandler()
@@ -375,37 +375,30 @@ func TestAuditLogProcessor(t *testing.T) {
 		// Wait for processing
 		time.Sleep(100 * time.Millisecond)
 
-		// Verify high severity record was processed first
 		exportedBatches := exporter.GetExportedRecords()
 		if len(exportedBatches) == 0 {
-			t.Error("Expected at least one export batch")
+			t.Fatal("expected at least one export batch")
 		}
-
-		// Check if high severity record appears in an earlier batch
-		foundHighSeverity := false
-		foundLowSeverity := false
-		highSeverityBatch := -1
-		lowSeverityBatch := -1
-
-		for i, batch := range exportedBatches {
+		var order []string
+		for _, batch := range exportedBatches {
 			for _, record := range batch {
-				if record.Body().AsString() == "high severity" {
-					foundHighSeverity = true
-					highSeverityBatch = i
-				}
-				if record.Body().AsString() == "low severity" {
-					foundLowSeverity = true
-					lowSeverityBatch = i
-				}
+				order = append(order, record.Body().AsString())
 			}
 		}
-
-		if !foundHighSeverity || !foundLowSeverity {
-			t.Error("Expected both records to be exported")
+		lowIdx, highIdx := -1, -1
+		for i, body := range order {
+			switch body {
+			case "low severity":
+				lowIdx = i
+			case "high severity":
+				highIdx = i
+			}
 		}
-
-		if highSeverityBatch >= lowSeverityBatch {
-			t.Log("High severity record was processed in batch", highSeverityBatch, "and low severity in batch", lowSeverityBatch)
+		if lowIdx < 0 || highIdx < 0 {
+			t.Fatalf("expected both records exported, got order %v", order)
+		}
+		if lowIdx > highIdx {
+			t.Fatalf("expected FIFO order (low before high), got order %v", order)
 		}
 	})
 
@@ -870,27 +863,6 @@ func TestAuditLogProcessorBuilder(t *testing.T) {
 			t.Error("expected error with negative timeout")
 		}
 	})
-}
-
-func TestGetSeverityPriority(t *testing.T) {
-	tests := []struct {
-		severity log.Severity
-		expected int
-	}{
-		{log.SeverityTrace, 1},
-		{log.SeverityDebug, 2},
-		{log.SeverityInfo, 3},
-		{log.SeverityWarn, 4},
-		{log.SeverityError, 5},
-		{log.SeverityFatal, 6},
-	}
-
-	for _, test := range tests {
-		priority := getSeverityPriority(test.severity)
-		if priority != test.expected {
-			t.Errorf("Expected priority %d for severity %v, got %d", test.expected, test.severity, priority)
-		}
-	}
 }
 
 type failThenSucceedExporter struct {

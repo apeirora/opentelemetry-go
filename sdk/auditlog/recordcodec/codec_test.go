@@ -15,7 +15,7 @@ func TestSerializeDeserializeGetRecordID(t *testing.T) {
 	r := logtest.RecordFactory{
 		Body: log.StringValue(`{"id":"R1"}`),
 		Attributes: []log.KeyValue{
-			log.String("audit.record_id", "rec-R1"),
+			log.String("audit.record.id", "rec-R1"),
 			log.String("base", "v"),
 		},
 		AttributeValueLengthLimit: -1,

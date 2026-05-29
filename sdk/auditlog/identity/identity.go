@@ -12,7 +12,7 @@ import (
 )
 
 const (
-	attrRecordID = "audit.record_id"
+	attrRecordID = "audit.record.id"
 	attrHash     = "audit.hash"
 	attrHMAC     = "audit.hmac"
 )

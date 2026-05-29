@@ -10,16 +10,12 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/google/uuid"
 	"go.opentelemetry.io/otel/log"
 	"golang.org/x/time/rate"
 )
 
-type AuditEnabledParameters struct {
-	EventName string
-}
-
 type AuditRecordProcessor interface {
-	Enabled(ctx context.Context, param AuditEnabledParameters) bool
 	OnEmit(ctx context.Context, record *Record) error
 	Shutdown(ctx context.Context) error
 	ForceFlush(ctx context.Context) error
@@ -28,7 +24,6 @@ type AuditRecordProcessor interface {
 type AuditLogger interface {
 	Emit(ctx context.Context, record AuditRecord) error
 	EmitWithResult(ctx context.Context, record AuditRecord) AuditEmitResult
-	Enabled(ctx context.Context, eventName string) bool
 }
 
 type AuditEmitResult struct {
@@ -47,21 +42,31 @@ type auditLogger struct {
 }
 
 const (
-	auditAttrActor         = "audit.actor"
-	auditAttrActorType     = "audit.actor_type"
+	auditAttrActor         = "audit.actor.id"
+	auditAttrActorType     = "audit.actor.type"
 	auditAttrAction        = "audit.action"
-	auditAttrResource      = "audit.resource"
+	auditAttrTargetID      = "audit.target.id"
+	auditAttrTargetType    = "audit.target.type"
 	auditAttrOutcome       = "audit.outcome"
-	auditAttrSourceIP      = "audit.source_ip"
-	auditAttrRecordID      = "audit.record_id"
+	auditAttrSourceID      = "audit.source.id"
+	auditAttrRecordID      = "audit.record.id"
 	auditAttrSignature     = "audit.signature"
 	auditAttrHMAC          = "audit.hmac"
 	auditAttrHash          = "audit.hash"
-	auditAttrSchemaVersion = "audit.schema_version"
+	auditAttrSchemaVersion = "audit.schema.version"
 	auditAttrKeyID         = "audit.key_id"
-	auditAttrSequenceNo    = "audit.sequence_no"
+	auditAttrSequenceNo    = "audit.sequence.number"
 	auditAttrPrevHash      = "audit.prev_hash"
 )
+
+func auditTargetFields(record AuditRecord) (id, typ string) {
+	id = strings.TrimSpace(record.TargetID)
+	typ = strings.TrimSpace(record.TargetType)
+	if id == "" && record.Resource.Kind() != log.KindEmpty {
+		id = strings.TrimSpace(record.Resource.String())
+	}
+	return id, typ
+}
 
 func auditRecordIDAttrMatches(r Record, want string) bool {
 	want = strings.TrimSpace(want)
@@ -97,6 +102,9 @@ func (l *auditLogger) Emit(ctx context.Context, record AuditRecord) error {
 }
 
 func (l *auditLogger) EmitWithResult(ctx context.Context, record AuditRecord) AuditEmitResult {
+	if record.RecordID == "" {
+		record.RecordID = uuid.NewString()
+	}
 	result := AuditEmitResult{
 		RecordID: record.RecordID,
 		Hash:     record.Hash,
@@ -141,20 +149,28 @@ func (l *auditLogger) EmitWithResult(ctx context.Context, record AuditRecord) Au
 		otelRecord.SetObservedTimestamp(time.Now())
 	}
 	otelRecord.SetEventName(record.EventName)
+	targetID, targetType := auditTargetFields(record)
 	auditAttrs := []log.KeyValue{
 		log.KeyValue{Key: auditAttrActor, Value: record.Actor},
 		log.String(auditAttrActorType, record.ActorType),
 		log.String(auditAttrAction, record.Action),
-		log.KeyValue{Key: auditAttrResource, Value: record.Resource},
 		log.String(auditAttrOutcome, record.Outcome),
-		log.String(auditAttrSchemaVersion, record.SchemaVersion),
+	}
+	if targetID != "" {
+		auditAttrs = append(auditAttrs, log.String(auditAttrTargetID, targetID))
+	}
+	if targetType != "" {
+		auditAttrs = append(auditAttrs, log.String(auditAttrTargetType, targetType))
+	}
+	if record.SchemaVersion != "" {
+		auditAttrs = append(auditAttrs, log.String(auditAttrSchemaVersion, record.SchemaVersion))
 	}
 	if !auditRecordIDAttrMatches(otelRecord, record.RecordID) {
 		auditAttrs = append(auditAttrs, log.String(auditAttrRecordID, record.RecordID))
 	}
 	otelRecord.AddAttributes(auditAttrs...)
 	if record.SourceIP != "" {
-		otelRecord.AddAttributes(log.String(auditAttrSourceIP, record.SourceIP))
+		otelRecord.AddAttributes(log.String(auditAttrSourceID, record.SourceIP))
 	}
 	if l.provider.exportIntegrity.Has(AuditIntegritySignature) && record.Signature != "" {
 		otelRecord.AddAttributes(log.String(auditAttrSignature, record.Signature))
@@ -222,44 +238,17 @@ func validateRequiredAuditRecord(record AuditRecord, p *AuditLoggerProvider) err
 	if record.Action == "" {
 		return newAuditStatusError(AuditErrorInvalidRequest, "audit action is required", false, nil)
 	}
-	if record.Resource.Kind() == log.KindEmpty {
-		return newAuditStatusError(AuditErrorInvalidRequest, "audit resource is required", false, nil)
+	targetID, _ := auditTargetFields(record)
+	if targetID == "" {
+		return newAuditStatusError(AuditErrorInvalidRequest, "audit target id is required", false, nil)
 	}
 	if record.Outcome == "" {
 		return newAuditStatusError(AuditErrorInvalidRequest, "audit outcome is required", false, nil)
 	}
-	if record.Body().Kind() == log.KindEmpty {
-		return newAuditStatusError(AuditErrorInvalidRequest, "audit body is required", false, nil)
-	}
-	if record.AttributesLen() == 0 {
-		return newAuditStatusError(AuditErrorInvalidRequest, "audit attributes are required", false, nil)
-	}
-	if record.RecordID == "" {
-		return newAuditStatusError(AuditErrorInvalidRequest, "audit record_id is required", false, nil)
-	}
 	if !p.satisfiesRequiredIntegrity(record) {
 		return newAuditStatusError(AuditErrorInvalidRequest, "audit integrity proof is required", false, nil)
 	}
-	if record.SchemaVersion == "" {
-		return newAuditStatusError(AuditErrorInvalidRequest, "audit schema_version is required", false, nil)
-	}
 	return nil
-}
-
-func (l *auditLogger) Enabled(ctx context.Context, eventName string) bool {
-	if l.provider.stopped.Load() {
-		return false
-	}
-	if len(l.provider.processors) == 0 {
-		return false
-	}
-	param := AuditEnabledParameters{EventName: eventName}
-	for _, p := range l.provider.processors {
-		if p.Enabled(ctx, param) {
-			return true
-		}
-	}
-	return false
 }
 
 type AuditLoggerProvider struct {
@@ -644,8 +633,10 @@ type AuditRecord struct {
 	Actor     log.Value
 	ActorType string
 	Action    string
-	Resource  log.Value
-	Outcome   string
+	Resource   log.Value
+	TargetID   string
+	TargetType string
+	Outcome    string
 	SourceIP  string
 	RecordID  string
 	Hash      string

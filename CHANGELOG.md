@@ -8,6 +8,10 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ## [Unreleased]
 
+### Changed
+
+- In `go.opentelemetry.io/otel/sdk/auditlog`, align exported attribute keys with dotted audit naming (`audit.actor.id`, `audit.target.id`, `audit.record.id`, and related fields), remove `Enabled` from `AuditLogger` and `AuditRecordProcessor`, relax body/schema validation, auto-generate missing record IDs, and export queued records in FIFO order instead of severity priority.
+
 ### Added
 
 - In `go.opentelemetry.io/otel/sdk/auditlog`, add `WithAuditRecordSigning` to configure per-provider integrity for every emitted record (HMAC, hash, and/or certificate signature) and the signed payload scope (`AuditSignContentMeta`, `AuditSignContentBody`, or `AuditSignContentAttr`). Add `WithAuditSignContent`, `WithAuditAutoSignIntegrity`, `WithAuditRequiredIntegrity`, `WithAuditExportIntegrity`, custom `WithAuditHMACSigner`, `WithAuditHashComputer`, `WithAuditSignatureSigner`, `WithAuditIntegrityEnricher`, hash verification, `audit.hash` export, and `NewAuditCertificateSignatureSigner` / `NewAuditCertificateSignatureSignerFromFiles` / `NewAuditCertificateSignatureVerifier` / `NewAuditCertificateSignatureVerifierFromFiles` for certificate-based signatures.
@@ -93,7 +97,7 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 - Enforce the 8192-byte baggage size limit during extraction/parsing, changing behavior when the limit is exceeded in `go.opentelemetry.io/otel/baggage` and `go.opentelemetry.io/otel/propagation`. (#8222)
 - In `go.opentelemetry.io/otel/sdk/auditlog`, `AuditLogProcessor` retries removing exported records from the `AuditLogStore`, surfaces compaction failures via `AuditExceptionHandler`, and fails `ForceFlush`/`Shutdown` when removal still fails after retries (previously export was treated as successful even when `RemoveAll` failed, leaving durable stores unchanged).
 - In `go.opentelemetry.io/otel/sdk/auditlog/store`, `AuditLogFileStore` compaction falls back to truncating the log file and copying from a temp file when rename/replace fails (helps Windows when the log path is open elsewhere).
-- In `go.opentelemetry.io/otel/sdk/auditlog`, `identity.GetRecordID` uses the last non-empty `audit.record_id` when iterating attributes, and `EmitWithResult` skips adding `audit.record_id` when the cloned `Record` already contains the same id. Together this keeps file-store compaction aligned with exported records when callers pre-set `audit.record_id` on the embedded `Record` (as in the auditlog testapp).
+- In `go.opentelemetry.io/otel/sdk/auditlog`, `identity.GetRecordID` uses the last non-empty `audit.record.id` when iterating attributes, and `EmitWithResult` skips adding `audit.record.id` when the cloned `Record` already contains the same id. Together this keeps file-store compaction aligned with exported records when callers pre-set `audit.record.id` on the embedded `Record` (as in the auditlog testapp).
 - In `go.opentelemetry.io/otel/sdk/auditlog/recordcodec`, `Deserialize` applies unlimited attribute count and value length limits while rebuilding the `sdk/log.Record`, matching logger-created records. Previously the zero-value limits treated `0` as "truncate strings to length zero", so persisted audit lines lost attribute payloads and durable store compaction could not match exported record ids.
 - In `go.opentelemetry.io/otel/sdk/auditlog`, signature verification uses the same `sign_content` payload bytes as signing (HMAC/hash already did).
 - In `go.opentelemetry.io/otel/sdk/auditlog`, processor shutdown no longer races with ad-hoc export goroutines started from `OnEmit`.

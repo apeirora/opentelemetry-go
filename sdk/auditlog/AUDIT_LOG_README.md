@@ -4,7 +4,7 @@
 
 It includes:
 
-- an `AuditLogProcessor` with severity-priority queueing, periodic export, and retry
+- an `AuditLogProcessor` with FIFO queueing, periodic export, and retry
 - pluggable `AuditLogStore` implementations
 - a storage-extension adapter for memory/file/Redis/SQL backends
 - an `AuditLoggerProvider`/`AuditLogger` API with policy checks and integrity verification
@@ -41,7 +41,7 @@ type AuditLogStore interface {
 
 - stores records before export
 - loads persisted records on startup
-- orders queued records by severity priority (`Fatal` highest, `Trace` lowest)
+- orders queued records FIFO (first enqueued, first exported)
 - exports in batches on a background ticker
 - retries failed exports using configured backoff
 - supports `ForceFlush` and `Shutdown`
@@ -270,12 +270,12 @@ See:
 
 # Audit Log Storage for OpenTelemetry Go SDK
 
-This package provides audit log storage capabilities for the OpenTelemetry Go SDK, similar to the Java implementation. It includes persistent storage, priority-based processing, and retry mechanisms for reliable audit logging.
+This package provides audit log storage capabilities for the OpenTelemetry Go SDK, similar to the Java implementation. It includes persistent storage, FIFO export ordering, and retry mechanisms for reliable audit logging.
 
 ## Features
 
 - **Persistent Storage**: File-based storage that survives application restarts
-- **Priority Processing**: Higher severity logs are processed first
+- **FIFO Processing**: Records are exported in arrival order
 - **Retry Logic**: Automatic retry with exponential backoff for failed exports
 - **Batch Processing**: Configurable batch sizes for efficient export
 - **Thread-Safe**: Concurrent access support with proper locking
@@ -373,7 +373,7 @@ adapter, err := NewAuditLogStorageExtensionAdapter(client)
 
 The `AuditLogProcessor` implements the `Processor` interface and provides:
 
-- Priority-based processing (higher severity first)
+- FIFO export ordering (enqueue order preserved)
 - Automatic retry with exponential backoff
 - Batch processing with configurable sizes
 - Background processing with periodic exports
@@ -525,16 +525,9 @@ func TestAuditLogging(t *testing.T) {
 | `MaxBackoff` | `time.Duration` | `1m` | Maximum backoff duration |
 | `BackoffMultiplier` | `float64` | `2.0` | Backoff multiplier |
 
-## Priority Processing
+## Export Ordering
 
-Logs are processed in priority order based on severity:
-
-1. **Fatal** (Priority 6) - Highest priority
-2. **Error** (Priority 5)
-3. **Warn** (Priority 4)
-4. **Info** (Priority 3)
-5. **Debug** (Priority 2)
-6. **Trace** (Priority 1) - Lowest priority
+The async processor exports records in FIFO order (first enqueued, first exported) so receivers observe a stable time sequence.
 
 ## File Storage Format
 
@@ -557,7 +550,7 @@ The audit log processor includes comprehensive error handling:
 ## Performance Considerations
 
 - **Batch Processing**: Reduces overhead by processing multiple records together
-- **Priority Queue**: Efficient processing of high-priority logs first
+- **FIFO queue**: Stable export ordering by enqueue time
 - **Async Processing**: Non-blocking log emission with background export
 - **File I/O**: Optimized for append-only operations
 - **Memory Usage**: Configurable batch sizes to control memory consumption

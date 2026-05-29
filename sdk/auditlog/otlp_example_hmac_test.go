@@ -18,7 +18,7 @@ const (
 	exampleTimestamp = "2026-05-19T12:36:04.2396044Z"
 	exampleBody      = `{"event":"user.login","n":0,"id":"rec-e4c39188-a682-4dc2-a17b-9e5ba0ab7a0a"}`
 
-	wantMetaSignHMACHex = "99cdff1d9b15811efe888245135831d6c95af6a020386faa1d12a9213477dda4"
+	wantMetaSignHMACHex = "b7a3acf3ba4914fcd7ff8a737c3300b75a038fbe1a2686cc1c28991104dabe4b"
 	wantBodySignHMACHex = "7f1fcaf6ff52d6f8f16ab6bca11bea1a71b540ff39ac810a1d3f1446edbae835"
 )
 
@@ -44,7 +44,7 @@ func exampleRecordForHMAC() AuditRecord {
 	base.SetObservedTimestamp(ts)
 	base.SetBody(log.StringValue(exampleBody))
 	base.AddAttributes(
-		log.String("audit.record_id", rid),
+		log.String("audit.record.id", rid),
 		log.String("base", "testapp"),
 		log.String("sign_content", "meta"),
 	)

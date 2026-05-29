@@ -31,9 +31,10 @@ type canonicalAuditRecord struct {
 	Actor         string               `json:"actor"`
 	ActorType     string               `json:"actor_type"`
 	Action        string               `json:"action"`
-	Resource      string               `json:"resource"`
+	TargetID      string               `json:"target_id"`
+	TargetType    string               `json:"target_type,omitempty"`
 	Outcome       string               `json:"outcome"`
-	SourceIP      string               `json:"source_ip,omitempty"`
+	SourceID      string               `json:"source_id,omitempty"`
 	Body          string               `json:"body"`
 	Attributes    []canonicalAttribute `json:"attributes"`
 	RecordID      string               `json:"record_id"`
@@ -279,6 +280,7 @@ func canonicalizeAuditRecord(record AuditRecord) ([]byte, error) {
 		}
 		return attrs[i].Key < attrs[j].Key
 	})
+	targetID, targetType := auditTargetFields(record)
 	payload := canonicalAuditRecord{
 		Timestamp:     record.Timestamp().UTC().Format("2006-01-02T15:04:05.000000000Z07:00"),
 		Observed:      record.ObservedTimestamp().UTC().Format("2006-01-02T15:04:05.000000000Z07:00"),
@@ -286,9 +288,10 @@ func canonicalizeAuditRecord(record AuditRecord) ([]byte, error) {
 		Actor:         record.Actor.String(),
 		ActorType:     record.ActorType,
 		Action:        record.Action,
-		Resource:      record.Resource.String(),
+		TargetID:      targetID,
+		TargetType:    targetType,
 		Outcome:       record.Outcome,
-		SourceIP:      record.SourceIP,
+		SourceID:      record.SourceIP,
 		Body:          record.Body().String(),
 		Attributes:    attrs,
 		RecordID:      record.RecordID,

@@ -52,8 +52,8 @@ func main() {
 	pemStr := strings.TrimSpace(string(pemBytes))
 
 	keys := map[string][]byte{
-		"pem_trimmed":     []byte(pemStr),
-		"pem_raw_file":    pemBytes,
+		"pem_trimmed":  []byte(pemStr),
+		"pem_raw_file": pemBytes,
 	}
 	if block, _ := pem.Decode([]byte(pemStr)); block != nil {
 		keys["pem_der"] = block.Bytes
@@ -70,15 +70,15 @@ func main() {
 	tsStr := ts.UTC().Format("2006-01-02T15:04:05.000000000Z07:00")
 
 	otlp := map[string]string{
-		"audit.record_id":      "rec-e4c39188-a682-4dc2-a17b-9e5ba0ab7a0a",
+		"audit.record.id":      "rec-e4c39188-a682-4dc2-a17b-9e5ba0ab7a0a",
 		"base":                 "testapp",
-		"audit.actor":          "alice@example.com",
-		"audit.actor_type":     "user",
+		"audit.actor.id":       "alice@example.com",
+		"audit.actor.type":     "user",
 		"audit.action":         "login",
-		"audit.resource":       "/api/widgets",
+		"audit.target.id":      "/api/widgets",
 		"audit.outcome":        "success",
-		"audit.schema_version": "1.0",
-		"audit.source_ip":      "192.0.2.10",
+		"audit.schema.version": "1.0",
+		"audit.source.id":      "192.0.2.10",
 		"sign_content":         "meta",
 	}
 
@@ -86,21 +86,21 @@ func main() {
 		"timestamp":          tsStr,
 		"observed_timestamp": tsStr,
 		"event_name":         "user.login",
-		"actor":              otlp["audit.actor"],
-		"actor_type":         otlp["audit.actor_type"],
+		"actor":              otlp["audit.actor.id"],
+		"actor_type":         otlp["audit.actor.type"],
 		"action":             otlp["audit.action"],
-		"resource":           otlp["audit.resource"],
+		"target_id":          otlp["audit.target.id"],
 		"outcome":            otlp["audit.outcome"],
-		"source_ip":          otlp["audit.source_ip"],
+		"source_id":          otlp["audit.source.id"],
 		"body":               body,
 		"attributes":         sortedAttrs(otlp),
-		"record_id":          otlp["audit.record_id"],
-		"schema_version":     otlp["audit.schema_version"],
+		"record_id":          otlp["audit.record.id"],
+		"schema_version":     otlp["audit.schema.version"],
 	}
 	payload, _ := json.Marshal(canonical)
 
 	sdkAttrs := sortedAttrs(map[string]string{
-		"audit.record_id": otlp["audit.record_id"],
+		"audit.record.id": otlp["audit.record.id"],
 		"base":            otlp["base"],
 		"sign_content":    otlp["sign_content"],
 	})

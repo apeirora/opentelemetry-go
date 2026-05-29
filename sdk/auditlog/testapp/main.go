@@ -34,7 +34,7 @@
 // Delivery is synchronous (direct export on emit, WaitOnExport). For async store-and-retry
 // with -filestore durability, change SetDeliveryMode to AuditDeliveryModeAsyncStoreRetry in main.
 //
-// Each emitted audit record gets a unique audit.record_id (UUID) so new runs do not collide
+// Each emitted audit record gets a unique audit.record.id (UUID) so new runs do not collide
 // with rows still in a file-backed store from a previous run.
 //
 // Emit many records with a counter in each body and pause between emits:
@@ -442,7 +442,7 @@ func buildAuditRecord(eventName, action, sourceIP string, iter int) auditlog.Aud
 	body := fmt.Sprintf(`{"event":%q,"n":%d,"id":%q}`, eventName, iter, recordID)
 	base.SetBody(log.StringValue(body))
 	base.AddAttributes(
-		log.String("audit.record_id", recordID),
+		log.String("audit.record.id", recordID),
 		log.String("base", "testapp"),
 	)
 

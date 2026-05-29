@@ -319,7 +319,7 @@ func TestAuditIntegrationWaitOnExportClearsFileStoreAutoSignDuplicateRecordIDAtt
 		t.Fatalf("GetAll: %v", err)
 	}
 	if len(remaining) != 0 {
-		t.Fatalf("expected empty file store after delivered emits (duplicate audit.record_id attr), got %d", len(remaining))
+		t.Fatalf("expected empty file store after delivered emits (duplicate audit.record.id attr), got %d", len(remaining))
 	}
 }
 
@@ -461,9 +461,10 @@ type canonicalAuditRecord struct {
 	Actor         string               `json:"actor"`
 	ActorType     string               `json:"actor_type"`
 	Action        string               `json:"action"`
-	Resource      string               `json:"resource"`
+	TargetID      string               `json:"target_id"`
+	TargetType    string               `json:"target_type,omitempty"`
 	Outcome       string               `json:"outcome"`
-	SourceIP      string               `json:"source_ip,omitempty"`
+	SourceID      string               `json:"source_id,omitempty"`
 	Body          string               `json:"body"`
 	Attributes    []canonicalAttribute `json:"attributes"`
 	RecordID      string               `json:"record_id"`
@@ -484,7 +485,7 @@ func makeAutoSignedAuditRecordDuplicateRecordIDAttr(t *testing.T, i int) auditlo
 		AttributeValueLengthLimit: -1,
 		AttributeCountLimit:       -1,
 		Attributes: []log.KeyValue{
-			log.String("audit.record_id", rid),
+			log.String("audit.record.id", rid),
 			log.String("base", "integration-dup"),
 		},
 	}.NewRecord()
@@ -557,6 +558,11 @@ func canonicalizeAuditRecord(record auditlog.AuditRecord) ([]byte, error) {
 		return attrs[i].Key < attrs[j].Key
 	})
 
+	targetID := strings.TrimSpace(record.TargetID)
+	if targetID == "" && record.Resource.Kind() != log.KindEmpty {
+		targetID = strings.TrimSpace(record.Resource.String())
+	}
+	targetType := strings.TrimSpace(record.TargetType)
 	payload := canonicalAuditRecord{
 		Timestamp:     record.Timestamp().UTC().Format("2006-01-02T15:04:05.000000000Z07:00"),
 		Observed:      record.ObservedTimestamp().UTC().Format("2006-01-02T15:04:05.000000000Z07:00"),
@@ -564,9 +570,10 @@ func canonicalizeAuditRecord(record auditlog.AuditRecord) ([]byte, error) {
 		Actor:         record.Actor.String(),
 		ActorType:     record.ActorType,
 		Action:        record.Action,
-		Resource:      record.Resource.String(),
+		TargetID:      targetID,
+		TargetType:    targetType,
 		Outcome:       record.Outcome,
-		SourceIP:      record.SourceIP,
+		SourceID:      record.SourceIP,
 		Body:          record.Body().String(),
 		Attributes:    attrs,
 		RecordID:      record.RecordID,

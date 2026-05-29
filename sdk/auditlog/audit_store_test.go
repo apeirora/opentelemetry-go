@@ -556,7 +556,7 @@ func createTestRecord(message string, severity log.Severity) Record {
 		AttributeValueLengthLimit: -1,
 		AttributeCountLimit:       -1,
 		Attributes: []log.KeyValue{
-			log.String("audit.record_id", fmt.Sprintf("%s-%d", message, now.UnixNano())),
+			log.String("audit.record.id", fmt.Sprintf("%s-%d", message, now.UnixNano())),
 			log.String("audit.hmac", fmt.Sprintf("hmac-%s", message)),
 		},
 	}.NewRecord()
