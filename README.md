@@ -9,6 +9,7 @@
 [![Fuzzing Status](https://oss-fuzz-build-logs.storage.googleapis.com/badges/opentelemetry-go.svg)](https://issues.oss-fuzz.com/issues?q=project:opentelemetry-go)
 [![FOSSA Status](https://app.fossa.com/api/projects/custom%2B162%2Fgithub.com%2Fopen-telemetry%2Fopentelemetry-go.svg?type=shield&issueType=license)](https://app.fossa.com/projects/custom%2B162%2Fgithub.com%2Fopen-telemetry%2Fopentelemetry-go?ref=badge_shield&issueType=license)
 [![Slack](https://img.shields.io/badge/slack-@cncf/otel--go-brightgreen.svg?logo=slack)](https://cloud-native.slack.com/archives/C01NPAXACKT)
+[![REUSE status](https://api.reuse.software/badge/github.com/apeirora/opentelemetry-go)](https://api.reuse.software/info/github.com/apeirora/opentelemetry-go)
 
 OpenTelemetry-Go is the [Go](https://golang.org/) implementation of [OpenTelemetry](https://opentelemetry.io/).
 It provides a set of APIs to directly measure performance and behavior of your software and send this data to observability platforms.
