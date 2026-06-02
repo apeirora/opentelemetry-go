@@ -111,7 +111,7 @@ func stressRecordCount(t *testing.T) int {
 	if testing.Short() {
 		return 50
 	}
-	return 200
+	return 200000
 }
 
 func guaranteeRecordCount(t *testing.T) int {

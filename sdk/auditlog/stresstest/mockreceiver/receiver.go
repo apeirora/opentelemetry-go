@@ -160,6 +160,13 @@ func (r *Receiver) UniqueRecordCount() int {
 	return len(r.unique)
 }
 
+func (r *Receiver) HasRecordID(id string) bool {
+	r.uniqueMu.Lock()
+	defer r.uniqueMu.Unlock()
+	_, ok := r.unique[id]
+	return ok
+}
+
 func (r *Receiver) AcceptedSeqOrder() []int {
 	r.orderMu.Lock()
 	defer r.orderMu.Unlock()

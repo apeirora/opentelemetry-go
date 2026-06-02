@@ -179,8 +179,10 @@ func TestStressRejectedRecordsNeverReachSink(t *testing.T) {
 			t.Fatalf("valid emit %d: %d %s", i, res.StatusCode, res.Reason)
 		}
 	}
+	rejectedIDs := make([]string, 0, 3)
 	for i := 0; i < 3; i++ {
 		rec := makeStressRecord(valid + i)
+		rejectedIDs = append(rejectedIDs, rec.RecordID)
 		rec.HMAC = "0000000000000000000000000000000000000000000000000000000000000000"
 		res := h.logger.EmitWithResult(context.Background(), rec)
 		if res.StatusCode != 400 {
@@ -195,6 +197,11 @@ func TestStressRejectedRecordsNeverReachSink(t *testing.T) {
 	}
 	if got := h.recv.UniqueRecordCount(); got != valid {
 		t.Fatalf("sink accepted only valid records: want %d got %d", valid, got)
+	}
+	for _, id := range rejectedIDs {
+		if h.recv.HasRecordID(id) {
+			t.Fatalf("rejected record_id %q was accepted by sink", id)
+		}
 	}
 }
 

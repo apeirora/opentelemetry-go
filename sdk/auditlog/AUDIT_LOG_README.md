@@ -337,7 +337,6 @@ adapter, err := NewAuditLogStorageExtensionAdapter(client)
 client, err := NewBoltDBStorageClient("/var/log/audit/storage.db")
 adapter, err := NewAuditLogStorageExtensionAdapter(client)
 ```
-
 ##### Redis Storage (Distributed)
 
 ```go
@@ -590,3 +589,4 @@ When contributing to the audit log functionality:
 ## License
 
 This code is licensed under the Apache License 2.0, same as the OpenTelemetry project.
+
