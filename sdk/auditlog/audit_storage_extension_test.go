@@ -463,11 +463,11 @@ type mockStorageExporter struct {
 	mu      sync.Mutex
 }
 
-func (e *mockStorageExporter) Export(ctx context.Context, records []Record) error {
+func (e *mockStorageExporter) Export(ctx context.Context, records []Record) (ExportResult, error) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	e.records = append(e.records, records...)
-	return nil
+	return ExportOK(records), nil
 }
 
 func (e *mockStorageExporter) Shutdown(ctx context.Context) error {

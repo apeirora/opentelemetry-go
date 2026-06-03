@@ -19,7 +19,7 @@ It includes:
 
 ## OTLP HTTP export
 
-`Exporter` is whatever you provide; this package does not configure OTLP endpoints. The standard `otlploghttp` client defaults to URL path `/v1/logs`. Collectors that ingest audit logs on `/auditlogs` need `otlploghttp.WithURLPath("/auditlogs")` or a URL whose path is `/auditlogs`. The runnable demo under `sdk/auditlog/testapp` sets `/auditlogs` when `-otlp-endpoint` has no path (for example `http://localhost:4318`).
+Use `go.opentelemetry.io/otel/sdk/auditlog/otlpexport` for OTLP/HTTP audit export (`POST /v1/audit` by default). The API surface lives in `go.opentelemetry.io/otel/audit`; the SDK implements it via `SdkAuditProvider` and `AuditLogger.Emit`, which returns `audit.AuditReceipt` after synchronous delivery (default `WaitOnExport: true`).
 
 ## Core Types
 
@@ -190,7 +190,7 @@ syncProcessor, err := NewAuditLogProcessorBuilder(exporter, NewAuditLogInMemoryS
 - `RetryPolicy.InitialBackoff`: `1s`
 - `RetryPolicy.MaxBackoff`: `1m`
 - `RetryPolicy.BackoffMultiplier`: `2.0`
-- `WaitOnExport`: `false`
+- `WaitOnExport`: `true`
 - `ExceptionHandler`: `DefaultAuditExceptionHandler`
 
 ## Audit Record Requirements
@@ -512,7 +512,7 @@ func TestAuditLogging(t *testing.T) {
 | `ScheduleDelay` | `time.Duration` | `1s` | Delay between periodic exports |
 | `MaxExportBatchSize` | `int` | `512` | Maximum records per export batch |
 | `ExporterTimeout` | `time.Duration` | `30s` | Timeout for export operations |
-| `WaitOnExport` | `bool` | `false` | Whether to wait for exports to complete |
+| `WaitOnExport` | `bool` | `true` | Whether to wait for exports to complete before returning from emit |
 | `RetryPolicy` | `RetryPolicy` | See below | Retry configuration |
 
 ### RetryPolicy

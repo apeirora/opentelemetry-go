@@ -15,8 +15,9 @@ import (
 
 func defaultAsyncOpts() harnessOpts {
 	return harnessOpts{
-		receiverCfg: mockreceiver.Config{URLPath: "/auditlogs", StartAccepting: true},
+		receiverCfg:  mockreceiver.Config{URLPath: "/v1/audit", StartAccepting: true},
 		maxBatchSize: 1,
+		waitOnExport: false,
 	}
 }
 
@@ -25,7 +26,7 @@ func TestStressCrashRecoveryFileStoreOTLP(t *testing.T) {
 	storeDir := t.TempDir()
 
 	recv, err := mockreceiver.Start(mockreceiver.Config{
-		URLPath:        "/auditlogs",
+		URLPath:        "/v1/audit",
 		StartAccepting: false,
 	})
 	if err != nil {
@@ -83,7 +84,7 @@ func TestStressCrashRecoveryFileStoreOTLP(t *testing.T) {
 func TestStressSinkDownThenUp(t *testing.T) {
 	n := guaranteeRecordCount(t)
 	h := newStressHarness(t, harnessOpts{
-		receiverCfg: mockreceiver.Config{URLPath: "/auditlogs", StartAccepting: false},
+		receiverCfg: mockreceiver.Config{URLPath: "/v1/audit", StartAccepting: false},
 		maxBatchSize: 1,
 	})
 
@@ -107,7 +108,7 @@ func TestStressSinkDownThenUp(t *testing.T) {
 func TestStressMaxAttemptsLeavesRecordsInStore(t *testing.T) {
 	n := 5
 	h := newStressHarness(t, harnessOpts{
-		receiverCfg: mockreceiver.Config{URLPath: "/auditlogs", StartAccepting: false},
+		receiverCfg: mockreceiver.Config{URLPath: "/v1/audit", StartAccepting: false},
 		maxBatchSize: 1,
 		retryPolicy: auditlog.RetryPolicy{
 			InitialBackoff:    2 * time.Millisecond,
@@ -144,7 +145,7 @@ func TestStressNoDuplicateAcceptedUnderFailures(t *testing.T) {
 	}
 	h := newStressHarness(t, harnessOpts{
 		receiverCfg: mockreceiver.Config{
-			URLPath:        "/auditlogs",
+			URLPath:        "/v1/audit",
 			StartAccepting: true,
 			FailEveryN:     2,
 			FailBehavior:   mockreceiver.FailBehaviorHTTP503,
@@ -207,7 +208,7 @@ func TestStressRejectedRecordsNeverReachSink(t *testing.T) {
 
 func TestStressWaitOnExportDeliveredWhenSinkUp(t *testing.T) {
 	h := newStressHarness(t, harnessOpts{
-		receiverCfg:  mockreceiver.Config{URLPath: "/auditlogs", StartAccepting: true},
+		receiverCfg:  mockreceiver.Config{URLPath: "/v1/audit", StartAccepting: true},
 		maxBatchSize: 1,
 		waitOnExport: true,
 	})
@@ -227,7 +228,7 @@ func TestStressWaitOnExportDeliveredWhenSinkUp(t *testing.T) {
 
 func TestStressWaitOnExportFailsWhenSinkDown(t *testing.T) {
 	h := newStressHarness(t, harnessOpts{
-		receiverCfg:  mockreceiver.Config{URLPath: "/auditlogs", StartAccepting: false},
+		receiverCfg:  mockreceiver.Config{URLPath: "/v1/audit", StartAccepting: false},
 		maxBatchSize: 1,
 		waitOnExport: true,
 	})
@@ -245,7 +246,7 @@ func TestStressWaitOnExportFailsWhenSinkDown(t *testing.T) {
 func TestStressFIFOOrderAtSink(t *testing.T) {
 	n := guaranteeRecordCount(t)
 	h := newStressHarness(t, harnessOpts{
-		receiverCfg:  mockreceiver.Config{URLPath: "/auditlogs", StartAccepting: true},
+		receiverCfg:  mockreceiver.Config{URLPath: "/v1/audit", StartAccepting: true},
 		maxBatchSize: 1,
 	})
 
@@ -271,7 +272,7 @@ func TestStressSyncDirectDoesNotReplayFileStore(t *testing.T) {
 	n := 5
 	storeDir := t.TempDir()
 
-	recv, err := mockreceiver.Start(mockreceiver.Config{URLPath: "/auditlogs", StartAccepting: false})
+	recv, err := mockreceiver.Start(mockreceiver.Config{URLPath: "/v1/audit", StartAccepting: false})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -342,7 +343,7 @@ func TestStressSyncDirectDoesNotReplayFileStore(t *testing.T) {
 func TestStressShutdownDrainsQueue(t *testing.T) {
 	n := guaranteeRecordCount(t)
 	h := newStressHarness(t, harnessOpts{
-		receiverCfg:   mockreceiver.Config{URLPath: "/auditlogs", StartAccepting: true},
+		receiverCfg:   mockreceiver.Config{URLPath: "/v1/audit", StartAccepting: true},
 		maxBatchSize:  128,
 		scheduleDelay: 10 * time.Second,
 	})
@@ -364,7 +365,7 @@ func TestStressShutdownDrainsQueue(t *testing.T) {
 
 func TestStressStorageWriteAlwaysPersistsBeforeExport(t *testing.T) {
 	h := newStressHarness(t, harnessOpts{
-		receiverCfg:      mockreceiver.Config{URLPath: "/auditlogs", StartAccepting: false},
+		receiverCfg:      mockreceiver.Config{URLPath: "/v1/audit", StartAccepting: false},
 		maxBatchSize:     512,
 		scheduleDelay:    time.Hour,
 		storageWriteMode: auditlog.AuditStorageWriteAlways,
@@ -385,7 +386,7 @@ func TestStressStorageWriteAlwaysPersistsBeforeExport(t *testing.T) {
 
 func TestStressStorageWriteOnErrorPersistsAfterFailure(t *testing.T) {
 	h := newStressHarness(t, harnessOpts{
-		receiverCfg:      mockreceiver.Config{URLPath: "/auditlogs", StartAccepting: false},
+		receiverCfg:      mockreceiver.Config{URLPath: "/v1/audit", StartAccepting: false},
 		maxBatchSize:     1,
 		scheduleDelay:    5 * time.Millisecond,
 		storageWriteMode: auditlog.AuditStorageWriteOnError,

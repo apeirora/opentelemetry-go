@@ -124,7 +124,7 @@ func ExampleUsage() {
 
 type ExampleExporter struct{}
 
-func (e *ExampleExporter) Export(ctx context.Context, records []Record) error {
+func (e *ExampleExporter) Export(ctx context.Context, records []Record) (ExportResult, error) {
 	fmt.Printf("=== AUDIT LOG EXPORT (%d records) ===\n", len(records))
 	for i, record := range records {
 		fmt.Printf("[%d] %s - %s: %s\n",
@@ -139,7 +139,7 @@ func (e *ExampleExporter) Export(ctx context.Context, records []Record) error {
 		})
 	}
 	fmt.Println("=====================================")
-	return nil
+	return ExportOK(records), nil
 }
 
 func (e *ExampleExporter) Shutdown(ctx context.Context) error {

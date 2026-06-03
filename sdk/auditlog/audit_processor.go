@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/audit"
 )
 
 type AuditException struct {
@@ -97,7 +98,7 @@ func DefaultAuditLogProcessorConfig(exporter Exporter, store AuditLogStore) Audi
 		MaxExportBatchSize: 512,
 		ExporterTimeout:    30 * time.Second,
 		RetryPolicy:        GetDefaultRetryPolicy(),
-		WaitOnExport:       false,
+		WaitOnExport:       true,
 		DeliveryMode:       AuditDeliveryModeAsyncStoreRetry,
 		StorageWriteMode:   AuditStorageWriteAlways,
 	}
@@ -118,6 +119,44 @@ type AuditLogProcessor struct {
 	wakeExport chan struct{}
 	wg         sync.WaitGroup
 	extension  StorageExtension
+
+	flushReceiptsMu sync.Mutex
+	flushReceipts   map[string]auditReceiptEntry
+}
+
+type auditReceiptEntry struct {
+	receipt audit.AuditReceipt
+}
+
+func (p *AuditLogProcessor) storeFlushReceipts(receipts []audit.AuditReceipt) {
+	if len(receipts) == 0 {
+		return
+	}
+	p.flushReceiptsMu.Lock()
+	defer p.flushReceiptsMu.Unlock()
+	if p.flushReceipts == nil {
+		p.flushReceipts = make(map[string]auditReceiptEntry, len(receipts))
+	}
+	for _, r := range receipts {
+		if r.RecordID == "" {
+			continue
+		}
+		p.flushReceipts[r.RecordID] = auditReceiptEntry{receipt: r}
+	}
+}
+
+func (p *AuditLogProcessor) ReceiptFor(recordID string) (audit.AuditReceipt, bool) {
+	p.flushReceiptsMu.Lock()
+	defer p.flushReceiptsMu.Unlock()
+	if p.flushReceipts == nil {
+		return audit.AuditReceipt{}, false
+	}
+	e, ok := p.flushReceipts[recordID]
+	if !ok {
+		return audit.AuditReceipt{}, false
+	}
+	delete(p.flushReceipts, recordID)
+	return e.receipt, true
 }
 
 func auditReplayDebugEnabled() bool {
@@ -311,11 +350,12 @@ func (p *AuditLogProcessor) replayStoredBatch(records []Record) error {
 		ctx, cancel = context.WithTimeout(ctx, p.config.ExporterTimeout)
 		defer cancel()
 	}
-	err := p.config.Exporter.Export(ctx, records)
+	exportResult, err := p.config.Exporter.Export(ctx, records)
 	if err != nil {
 		p.handleExportFailure(records, err)
 		return err
 	}
+	p.storeFlushReceipts(exportResult.Receipts)
 	p.currentRetryAttempt.Store(0)
 	p.lastRetryTimestamp.Store(0)
 	return p.removeExportedRecordsFromStore(ctx, records)
@@ -364,7 +404,8 @@ func (p *AuditLogProcessor) OnEmit(ctx context.Context, record *Record) error {
 			exportCtx, cancel = context.WithTimeout(exportCtx, p.config.ExporterTimeout)
 			defer cancel()
 		}
-		if err := p.config.Exporter.Export(exportCtx, []Record{*record}); err != nil {
+		exportResult, err := p.config.Exporter.Export(exportCtx, []Record{*record})
+		if err != nil {
 			exception := &AuditException{
 				Message:    "Failed to export record directly",
 				Cause:      err,
@@ -374,6 +415,7 @@ func (p *AuditLogProcessor) OnEmit(ctx context.Context, record *Record) error {
 			p.config.ExceptionHandler.Handle(exception)
 			return exception
 		}
+		p.storeFlushReceipts(exportResult.Receipts)
 		return nil
 	}
 
@@ -449,11 +491,12 @@ func (p *AuditLogProcessor) exportLogs(ignoreRetryDelay bool) error {
 	}
 
 	shouldRemove := p.shouldRemoveExportedRecordsFromStore()
-	err := p.config.Exporter.Export(ctx, recordsToExport)
+	exportResult, err := p.config.Exporter.Export(ctx, recordsToExport)
 	if err != nil {
 		p.handleExportFailure(recordsToExport, err)
 		return err
 	}
+	p.storeFlushReceipts(exportResult.Receipts)
 	p.currentRetryAttempt.Store(0)
 	p.lastRetryTimestamp.Store(0)
 	if !shouldRemove {

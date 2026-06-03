@@ -14,7 +14,7 @@ import (
 func TestStressOTLPAllRecordsReceived(t *testing.T) {
 	total := stressRecordCount(t)
 	h := newStressHarness(t, harnessOpts{
-		receiverCfg: mockreceiver.Config{URLPath: "/auditlogs", StartAccepting: true},
+		receiverCfg: mockreceiver.Config{URLPath: "/v1/audit", StartAccepting: true},
 		maxBatchSize: 64,
 	})
 
@@ -43,7 +43,7 @@ func TestStressOTLPWithIntermittentTimeouts(t *testing.T) {
 	}
 	h := newStressHarness(t, harnessOpts{
 		receiverCfg: mockreceiver.Config{
-			URLPath:        "/auditlogs",
+			URLPath:        "/v1/audit",
 			StartAccepting: true,
 			FailEveryN:     3,
 			FailBehavior:   mockreceiver.FailBehaviorTimeout,

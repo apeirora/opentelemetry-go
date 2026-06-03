@@ -43,12 +43,17 @@ type canonicalAuditRecord struct {
 	PrevHash      string               `json:"prev_hash,omitempty"`
 }
 
+// SignAuditRecordHMAC computes HMAC integrity for a record using JCS canonicalization.
+func SignAuditRecordHMAC(record AuditRecord, key []byte, configuredHashAlgorithm string, clearHash bool) (AuditRecord, error) {
+	return signAuditRecordHMAC(record, key, configuredHashAlgorithm, clearHash)
+}
+
 func signAuditRecordHMAC(record AuditRecord, key []byte, configuredHashAlgorithm string, clearHash bool) (AuditRecord, error) {
 	if len(key) == 0 {
 		return AuditRecord{}, fmt.Errorf("hmac key is required for signing")
 	}
 	alg := resolveHashAlgorithm(record, configuredHashAlgorithm)
-	payload, err := signingPayload(record, "")
+	payload, err := jcsSigningPayload(record)
 	if err != nil {
 		return AuditRecord{}, err
 	}
@@ -58,16 +63,19 @@ func signAuditRecordHMAC(record AuditRecord, key []byte, configuredHashAlgorithm
 	}
 	mac := hmac.New(h, key)
 	_, _ = mac.Write(payload)
+	sum := mac.Sum(nil)
 	if clearHash {
 		record.Hash = ""
 	}
-	record.HMAC = strings.ToLower(hex.EncodeToString(mac.Sum(nil)))
+	record.HMAC = strings.ToLower(hex.EncodeToString(sum))
+	record.IntegrityValue = encodeIntegrityValue(sum)
+	record.IntegrityAlgorithm = hmacIntegrityAlgorithm(alg)
 	return record, nil
 }
 
 func signAuditRecordHash(record AuditRecord, configuredHashAlgorithm string) (AuditRecord, error) {
 	alg := resolveHashAlgorithm(record, configuredHashAlgorithm)
-	payload, err := signingPayload(record, "")
+	payload, err := jcsSigningPayload(record)
 	if err != nil {
 		return AuditRecord{}, err
 	}
@@ -83,7 +91,7 @@ func signAuditRecordSignature(record AuditRecord, signer AuditSignatureSigner) (
 	if signer == nil {
 		return AuditRecord{}, fmt.Errorf("signature signer is required")
 	}
-	payload, err := signingPayload(record, "")
+	payload, err := jcsSigningPayload(record)
 	if err != nil {
 		return AuditRecord{}, err
 	}
@@ -102,7 +110,7 @@ func verifyAuditIntegrity(
 	configuredHashAlgorithm string,
 	defaultSignContent AuditSignContent,
 ) error {
-	payload, err := signingPayload(record, defaultSignContent)
+	payload, err := jcsSigningPayload(record)
 	if err != nil {
 		return err
 	}
@@ -116,7 +124,7 @@ func verifyAuditIntegrity(
 			return newAuditStatusError(AuditErrorInvalidRequest, "audit hash verification failed", false, nil)
 		}
 	}
-	if record.HMAC != "" {
+	if record.HMAC != "" || record.IntegrityValue != "" {
 		if len(hmacKey) == 0 {
 			return newAuditStatusError(AuditErrorInvalidRequest, "audit hmac present but no verification key configured", false, nil)
 		}
@@ -126,16 +134,28 @@ func verifyAuditIntegrity(
 		}
 		mac := hmac.New(h, hmacKey)
 		_, _ = mac.Write(payload)
-		macHex := hex.EncodeToString(mac.Sum(nil))
-		if !hmac.Equal([]byte(strings.ToLower(macHex)), []byte(strings.ToLower(record.HMAC))) {
-			return newAuditStatusError(AuditErrorInvalidRequest, "audit hmac verification failed", false, nil)
+		macSum := mac.Sum(nil)
+		if record.HMAC != "" {
+			macHex := hex.EncodeToString(macSum)
+			if !hmac.Equal([]byte(strings.ToLower(macHex)), []byte(strings.ToLower(record.HMAC))) {
+				return newAuditStatusError(AuditErrorInvalidRequest, "audit hmac verification failed", false, nil)
+			}
+		}
+		if record.IntegrityValue != "" {
+			want, err := decodeIntegrityValueHMAC(record.IntegrityValue)
+			if err != nil {
+				return newAuditStatusError(AuditErrorInvalidRequest, "invalid audit.integrity.value", false, err)
+			}
+			if !hmac.Equal(want, macSum) {
+				return newAuditStatusError(AuditErrorInvalidRequest, "audit.integrity.value verification failed", false, nil)
+			}
 		}
 	}
 	if record.Signature != "" {
 		if signatureVerifier == nil {
 			return newAuditStatusError(AuditErrorInvalidRequest, "audit signature present but no signature verifier configured", false, nil)
 		}
-		payload, perr := signingPayload(record, defaultSignContent)
+		payload, perr := jcsSigningPayload(record)
 		if perr != nil {
 			return perr
 		}

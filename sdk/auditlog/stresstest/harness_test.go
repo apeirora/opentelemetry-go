@@ -14,7 +14,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	"go.opentelemetry.io/otel/exporters/otlp/otlplog/otlploghttp"
+	"go.opentelemetry.io/otel/sdk/auditlog/otlpexport"
 	"go.opentelemetry.io/otel/log"
 	"go.opentelemetry.io/otel/sdk/log/logtest"
 
@@ -118,6 +118,7 @@ func guaranteeRecordCount(t *testing.T) int {
 	t.Helper()
 	if testing.Short() {
 		return 10
+		
 	}
 	return 25
 }
@@ -163,11 +164,11 @@ func newStressHarness(t *testing.T, opts harnessOpts) *stressHarness {
 		_ = recv.Close(ctx)
 	})
 
-	exporter, err := otlploghttp.New(
+	exporter, err := otlpexport.NewHTTP(
 		context.Background(),
-		otlploghttp.WithEndpoint(recv.HostPort()),
-		otlploghttp.WithInsecure(),
-		otlploghttp.WithURLPath(recv.URLPath()),
+		otlpexport.WithEndpoint(recv.HostPort()),
+		otlpexport.WithInsecure(),
+		otlpexport.WithURLPath(recv.URLPath()),
 	)
 	if err != nil {
 		t.Fatalf("otlp exporter: %v", err)
@@ -267,11 +268,11 @@ func newProcessorOnStore(
 ) (*auditlog.AuditLogProcessor, *auditlog.AuditLoggerProvider, auditlog.AuditLogger, *countingExceptionHandler) {
 	t.Helper()
 
-	exporter, err := otlploghttp.New(
+	exporter, err := otlpexport.NewHTTP(
 		context.Background(),
-		otlploghttp.WithEndpoint(recv.HostPort()),
-		otlploghttp.WithInsecure(),
-		otlploghttp.WithURLPath(recv.URLPath()),
+		otlpexport.WithEndpoint(recv.HostPort()),
+		otlpexport.WithInsecure(),
+		otlpexport.WithURLPath(recv.URLPath()),
 	)
 	if err != nil {
 		t.Fatalf("otlp exporter: %v", err)

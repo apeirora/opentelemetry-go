@@ -71,7 +71,7 @@ type Receiver struct {
 
 func Start(cfg Config) (*Receiver, error) {
 	if cfg.URLPath == "" {
-		cfg.URLPath = "/auditlogs"
+		cfg.URLPath = "/v1/audit"
 	}
 	if cfg.FailEveryN > 0 && cfg.FailBehavior == FailBehaviorNone {
 		cfg.FailBehavior = FailBehaviorHTTP503
@@ -361,6 +361,8 @@ func WaitForDrain(ctx context.Context, r *Receiver, want int, pending func() int
 	if err := WaitForUniqueRecords(ctx, r, want); err != nil {
 		return err
 	}
+	ticker := time.NewTicker(10 * time.Millisecond)
+	defer ticker.Stop()
 	for {
 		if pending() == 0 {
 			return nil
@@ -368,6 +370,7 @@ func WaitForDrain(ctx context.Context, r *Receiver, want int, pending func() int
 		select {
 		case <-ctx.Done():
 			return fmt.Errorf("timeout waiting for store drain (pending=%d): %w", pending(), ctx.Err())
+		case <-ticker.C:
 		}
 	}
 }

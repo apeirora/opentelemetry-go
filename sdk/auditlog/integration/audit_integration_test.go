@@ -5,9 +5,6 @@ package integration_test
 
 import (
 	"context"
-	"crypto/hmac"
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -29,16 +26,16 @@ type testGatedExporter struct {
 	exported     []auditlog.Record
 }
 
-func (e *testGatedExporter) Export(ctx context.Context, records []auditlog.Record) error {
+func (e *testGatedExporter) Export(ctx context.Context, records []auditlog.Record) (auditlog.ExportResult, error) {
 	if !e.allowSuccess.Load() {
-		return fmt.Errorf("export blocked")
+		return auditlog.ExportResult{}, fmt.Errorf("export blocked")
 	}
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	copied := make([]auditlog.Record, len(records))
 	copy(copied, records)
 	e.exported = append(e.exported, copied...)
-	return nil
+	return auditlog.ExportOK(records), nil
 }
 
 func (e *testGatedExporter) Shutdown(ctx context.Context) error  { return nil }
@@ -55,13 +52,13 @@ type testMockExporter struct {
 	exported [][]auditlog.Record
 }
 
-func (m *testMockExporter) Export(ctx context.Context, records []auditlog.Record) error {
+func (m *testMockExporter) Export(ctx context.Context, records []auditlog.Record) (auditlog.ExportResult, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	copied := make([]auditlog.Record, len(records))
 	copy(copied, records)
 	m.exported = append(m.exported, copied)
-	return nil
+	return auditlog.ExportOK(records), nil
 }
 
 func (m *testMockExporter) Shutdown(ctx context.Context) error  { return nil }
@@ -95,7 +92,8 @@ func TestAuditIntegrationProviderAsyncFileRecovery(t *testing.T) {
 			MaxBackoff:        5 * time.Millisecond,
 			BackoffMultiplier: 1.2,
 		},
-		DeliveryMode: auditlog.AuditDeliveryModeAsyncStoreRetry,
+		DeliveryMode:   auditlog.AuditDeliveryModeAsyncStoreRetry,
+		WaitOnExport:   false,
 	})
 	if err != nil {
 		t.Fatalf("failed to create first processor: %v", err)
@@ -531,15 +529,11 @@ func makeValidAuditRecordForTest(t *testing.T, suffix string, hmacKey []byte) au
 		HashAlgorithm: "sha256",
 	}
 
-	canonical, err := canonicalizeAuditRecord(record)
+	signed, err := auditlog.SignAuditRecordHMAC(record, hmacKey, "sha256", true)
 	if err != nil {
-		t.Fatalf("failed to canonicalize audit record: %v", err)
+		t.Fatalf("failed to sign audit record: %v", err)
 	}
-	mac := hmac.New(sha256.New, hmacKey)
-	_, _ = mac.Write(canonical)
-	record.HMAC = strings.ToLower(hex.EncodeToString(mac.Sum(nil)))
-
-	return record
+	return signed
 }
 
 func canonicalizeAuditRecord(record auditlog.AuditRecord) ([]byte, error) {

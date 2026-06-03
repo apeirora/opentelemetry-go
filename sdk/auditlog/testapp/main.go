@@ -69,7 +69,7 @@ import (
 
 	"github.com/google/uuid"
 
-	"go.opentelemetry.io/otel/exporters/otlp/otlplog/otlploghttp"
+	"go.opentelemetry.io/otel/sdk/auditlog/otlpexport"
 	"go.opentelemetry.io/otel/log"
 	auditlog "go.opentelemetry.io/otel/sdk/auditlog"
 	sdklog "go.opentelemetry.io/otel/sdk/log"
@@ -333,30 +333,28 @@ func buildExporter(otlpURL string) (auditlog.Exporter, error) {
 	if u.Host == "" {
 		return nil, fmt.Errorf("otlp-endpoint: missing host in %q", raw)
 	}
-	opts := []otlploghttp.Option{otlploghttp.WithEndpoint(u.Host)}
+	opts := []otlpexport.Option{otlpexport.WithEndpoint(u.Host)}
 	switch u.Scheme {
 	case "http":
-		opts = append(opts, otlploghttp.WithInsecure())
+		opts = append(opts, otlpexport.WithInsecure())
 	case "https":
 	default:
 		return nil, fmt.Errorf("otlp-endpoint: unsupported scheme %q (use http or https)", u.Scheme)
 	}
 	if p := strings.TrimSuffix(u.EscapedPath(), "/"); p != "" {
-		opts = append(opts, otlploghttp.WithURLPath(p))
-	} else {
-		opts = append(opts, otlploghttp.WithURLPath("/auditlogs"))
+		opts = append(opts, otlpexport.WithURLPath(p))
 	}
-	return otlploghttp.New(context.Background(), opts...)
+	return otlpexport.NewHTTP(context.Background(), opts...)
 }
 
 type loggingExporter struct {
 	inner auditlog.Exporter
 }
 
-func (e *loggingExporter) Export(ctx context.Context, records []auditlog.Record) error {
+func (e *loggingExporter) Export(ctx context.Context, records []auditlog.Record) (auditlog.ExportResult, error) {
 	for _, r := range records {
 		if err := printRecordJSON(os.Stderr, "sending", &r); err != nil {
-			return err
+			return auditlog.ExportResult{}, err
 		}
 	}
 	return e.inner.Export(ctx, records)
@@ -371,13 +369,13 @@ func newStdoutExporter() auditlog.Exporter {
 	return &stdoutExporter{}
 }
 
-func (e *stdoutExporter) Export(ctx context.Context, records []auditlog.Record) error {
+func (e *stdoutExporter) Export(ctx context.Context, records []auditlog.Record) (auditlog.ExportResult, error) {
 	for _, r := range records {
 		if err := printRecordJSON(os.Stdout, "", &r); err != nil {
-			return err
+			return auditlog.ExportResult{}, err
 		}
 	}
-	return nil
+	return auditlog.ExportOK(records), nil
 }
 
 func (e *stdoutExporter) Shutdown(context.Context) error   { return nil }

@@ -31,7 +31,7 @@ func NewMockExporter() *MockExporter {
 	}
 }
 
-func (m *MockExporter) Export(ctx context.Context, records []Record) error {
+func (m *MockExporter) Export(ctx context.Context, records []Record) (ExportResult, error) {
 	if m.exportDelay > 0 {
 		time.Sleep(m.exportDelay)
 	}
@@ -39,12 +39,14 @@ func (m *MockExporter) Export(ctx context.Context, records []Record) error {
 	m.mutex.Lock()
 	defer m.mutex.Unlock()
 
-	// Create a copy of the records
 	recordsCopy := make([]Record, len(records))
 	copy(recordsCopy, records)
 	m.exportedRecords = append(m.exportedRecords, recordsCopy)
 
-	return m.exportError
+	if m.exportError != nil {
+		return ExportResult{}, m.exportError
+	}
+	return ExportOK(records), nil
 }
 
 func (m *MockExporter) Shutdown(ctx context.Context) error {
@@ -171,7 +173,7 @@ type replayBatchExporter struct {
 	total       int
 }
 
-func (e *replayBatchExporter) Export(ctx context.Context, records []Record) error {
+func (e *replayBatchExporter) Export(ctx context.Context, records []Record) (ExportResult, error) {
 	e.mutex.Lock()
 	defer e.mutex.Unlock()
 	e.exportCalls++
@@ -179,7 +181,7 @@ func (e *replayBatchExporter) Export(ctx context.Context, records []Record) erro
 		e.maxBatch = len(records)
 	}
 	e.total += len(records)
-	return nil
+	return ExportOK(records), nil
 }
 
 func (e *replayBatchExporter) Shutdown(ctx context.Context) error {
@@ -877,16 +879,16 @@ type gatedExporter struct {
 	exported     []Record
 }
 
-func (e *gatedExporter) Export(ctx context.Context, records []Record) error {
+func (e *gatedExporter) Export(ctx context.Context, records []Record) (ExportResult, error) {
 	if !e.allowSuccess.Load() {
-		return fmt.Errorf("export blocked")
+		return ExportResult{}, fmt.Errorf("export blocked")
 	}
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	copied := make([]Record, len(records))
 	copy(copied, records)
 	e.exported = append(e.exported, copied...)
-	return nil
+	return ExportOK(records), nil
 }
 
 func (e *gatedExporter) Shutdown(ctx context.Context) error { return nil }
@@ -902,17 +904,17 @@ func newFailThenSucceedExporter(failures int) *failThenSucceedExporter {
 	return &failThenSucceedExporter{failuresRemaining: failures, exported: make([]Record, 0)}
 }
 
-func (e *failThenSucceedExporter) Export(ctx context.Context, records []Record) error {
+func (e *failThenSucceedExporter) Export(ctx context.Context, records []Record) (ExportResult, error) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	if e.failuresRemaining > 0 {
 		e.failuresRemaining--
-		return fmt.Errorf("transient export failure")
+		return ExportResult{}, fmt.Errorf("transient export failure")
 	}
 	copied := make([]Record, len(records))
 	copy(copied, records)
 	e.exported = append(e.exported, copied...)
-	return nil
+	return ExportOK(records), nil
 }
 
 func (e *failThenSucceedExporter) Shutdown(ctx context.Context) error { return nil }

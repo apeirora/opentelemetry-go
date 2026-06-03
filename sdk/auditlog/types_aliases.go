@@ -6,4 +6,3 @@ package auditlog
 import sdklog "go.opentelemetry.io/otel/sdk/log"
 
 type Record = sdklog.Record
-type Exporter = sdklog.Exporter

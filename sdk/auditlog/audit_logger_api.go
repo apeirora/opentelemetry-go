@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"go.opentelemetry.io/otel/audit"
 	"go.opentelemetry.io/otel/log"
 	"golang.org/x/time/rate"
 )
@@ -22,7 +23,7 @@ type AuditRecordProcessor interface {
 }
 
 type AuditLogger interface {
-	Emit(ctx context.Context, record AuditRecord) error
+	Emit(ctx context.Context, record AuditRecord) (audit.AuditReceipt, error)
 	EmitWithResult(ctx context.Context, record AuditRecord) AuditEmitResult
 }
 
@@ -93,12 +94,16 @@ func auditRecordIDAttrMatches(r Record, want string) bool {
 	return match
 }
 
-func (l *auditLogger) Emit(ctx context.Context, record AuditRecord) error {
+func (l *auditLogger) Emit(ctx context.Context, record AuditRecord) (audit.AuditReceipt, error) {
 	result := l.EmitWithResult(ctx, record)
 	if result.StatusCode >= 400 {
-		return newAuditStatusError(AuditErrorUnavailable, result.Reason, true, nil)
+		return audit.AuditReceipt{}, newAuditStatusError(AuditErrorUnavailable, result.Reason, true, nil)
 	}
-	return nil
+	return audit.AuditReceipt{
+		RecordID:      result.RecordID,
+		IntegrityHash: result.Hash,
+		SinkTimestamp: result.SinkTimestamp,
+	}, nil
 }
 
 func (l *auditLogger) EmitWithResult(ctx context.Context, record AuditRecord) AuditEmitResult {
@@ -178,6 +183,15 @@ func (l *auditLogger) EmitWithResult(ctx context.Context, record AuditRecord) Au
 	if l.provider.exportIntegrity.Has(AuditIntegrityHMAC) && record.HMAC != "" {
 		otelRecord.AddAttributes(log.String(auditAttrHMAC, record.HMAC))
 	}
+	if record.IntegrityValue != "" {
+		otelRecord.AddAttributes(log.String(auditAttrIntegrityValue, record.IntegrityValue))
+	}
+	if record.IntegrityAlgorithm != "" {
+		otelRecord.AddAttributes(log.String(auditAttrIntegrityAlgorithm, record.IntegrityAlgorithm))
+	}
+	if record.IntegrityCertificate != "" {
+		otelRecord.AddAttributes(log.String(auditAttrIntegrityCertificate, record.IntegrityCertificate))
+	}
 	if l.provider.exportIntegrity.Has(AuditIntegrityHash) && record.Hash != "" {
 		otelRecord.AddAttributes(log.String(auditAttrHash, record.Hash))
 	}
@@ -189,6 +203,10 @@ func (l *auditLogger) EmitWithResult(ctx context.Context, record AuditRecord) Au
 	}
 	if record.PrevHash != "" {
 		otelRecord.AddAttributes(log.String(auditAttrPrevHash, record.PrevHash))
+		otelRecord.AddAttributes(log.String(auditAttrPrevHashSpec, record.PrevHash))
+	}
+	if record.SourceType != "" {
+		otelRecord.AddAttributes(log.String(auditAttrSourceType, record.SourceType))
 	}
 	if mode := strings.TrimSpace(record.SignContent); mode != "" {
 		otelRecord.AddAttributes(log.String(auditAttrSignContent, mode))
@@ -211,9 +229,25 @@ func (l *auditLogger) EmitWithResult(ctx context.Context, record AuditRecord) Au
 				return result
 			}
 		}
+		for _, proc := range l.provider.processors {
+			if ap, ok := proc.(*AuditLogProcessor); ok {
+				if rcpt, found := ap.ReceiptFor(record.RecordID); found {
+					result.Hash = rcpt.IntegrityHash
+					result.SinkTimestamp = rcpt.SinkTimestamp
+					break
+				}
+			}
+		}
+		if result.SinkTimestamp.IsZero() {
+			result.SinkTimestamp = time.Now().UTC()
+		}
+		if result.Hash == "" {
+			if hash, err := integrityHashForAuditRecord(record); err == nil {
+				result.Hash = hash
+			}
+		}
 		result.StatusCode = 200
 		result.Status = "delivered"
-		result.SinkTimestamp = time.Now().UTC()
 	} else {
 		result.StatusCode = 202
 		result.Status = "queued"
@@ -237,10 +271,6 @@ func validateRequiredAuditRecord(record AuditRecord, p *AuditLoggerProvider) err
 	}
 	if record.Action == "" {
 		return newAuditStatusError(AuditErrorInvalidRequest, "audit action is required", false, nil)
-	}
-	targetID, _ := auditTargetFields(record)
-	if targetID == "" {
-		return newAuditStatusError(AuditErrorInvalidRequest, "audit target id is required", false, nil)
 	}
 	if record.Outcome == "" {
 		return newAuditStatusError(AuditErrorInvalidRequest, "audit outcome is required", false, nil)
@@ -642,6 +672,10 @@ type AuditRecord struct {
 	Hash      string
 	Signature string
 	HMAC      string
+	IntegrityValue       string
+	IntegrityAlgorithm   string
+	IntegrityCertificate string
+	SourceType           string
 	SchemaVersion string
 	SignContent   string
 	HashAlgorithm string
