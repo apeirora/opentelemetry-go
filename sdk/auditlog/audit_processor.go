@@ -338,8 +338,9 @@ func (p *AuditLogProcessor) invokeExport(message string) {
 
 func (p *AuditLogProcessor) enqueueLoadedRecord(record Record) error {
 	p.queueMutex.Lock()
-	p.queue = append(p.queue, record)
+	p.queue = append(p.queue, record.Clone())
 	p.queueMutex.Unlock()
+	auditMetricsInstance().adjustQueueDepth(context.Background(), 1)
 	return nil
 }
 
@@ -350,11 +351,14 @@ func (p *AuditLogProcessor) replayStoredBatch(records []Record) error {
 		ctx, cancel = context.WithTimeout(ctx, p.config.ExporterTimeout)
 		defer cancel()
 	}
+	exportStart := time.Now()
 	exportResult, err := p.config.Exporter.Export(ctx, records)
+	auditMetricsInstance().recordExportDuration(ctx, time.Since(exportStart))
 	if err != nil {
 		p.handleExportFailure(records, err)
 		return err
 	}
+	auditMetricsInstance().recordExported(ctx, int64(len(records)))
 	p.storeFlushReceipts(exportResult.Receipts)
 	p.currentRetryAttempt.Store(0)
 	p.lastRetryTimestamp.Store(0)
@@ -404,7 +408,9 @@ func (p *AuditLogProcessor) OnEmit(ctx context.Context, record *Record) error {
 			exportCtx, cancel = context.WithTimeout(exportCtx, p.config.ExporterTimeout)
 			defer cancel()
 		}
+		exportStart := time.Now()
 		exportResult, err := p.config.Exporter.Export(exportCtx, []Record{*record})
+		auditMetricsInstance().recordExportDuration(exportCtx, time.Since(exportStart))
 		if err != nil {
 			exception := &AuditException{
 				Message:    "Failed to export record directly",
@@ -415,6 +421,7 @@ func (p *AuditLogProcessor) OnEmit(ctx context.Context, record *Record) error {
 			p.config.ExceptionHandler.Handle(exception)
 			return exception
 		}
+		auditMetricsInstance().recordExported(exportCtx, 1)
 		p.storeFlushReceipts(exportResult.Receipts)
 		return nil
 	}
@@ -434,9 +441,10 @@ func (p *AuditLogProcessor) OnEmit(ctx context.Context, record *Record) error {
 	}
 
 	p.queueMutex.Lock()
-	p.queue = append(p.queue, *record)
+	p.queue = append(p.queue, record.Clone())
 	queueSize := len(p.queue)
 	p.queueMutex.Unlock()
+	auditMetricsInstance().adjustQueueDepth(ctx, 1)
 
 	if queueSize >= p.config.MaxExportBatchSize {
 		p.scheduleExport()
@@ -482,8 +490,10 @@ func (p *AuditLogProcessor) exportLogs(ignoreRetryDelay bool) error {
 	if len(recordsToExport) == 0 {
 		return nil
 	}
+	auditMetricsInstance().adjustQueueDepth(context.Background(), -int64(len(recordsToExport)))
 
 	ctx := context.Background()
+	exportStart := time.Now()
 	if p.config.ExporterTimeout > 0 {
 		var cancel context.CancelFunc
 		ctx, cancel = context.WithTimeout(ctx, p.config.ExporterTimeout)
@@ -492,10 +502,12 @@ func (p *AuditLogProcessor) exportLogs(ignoreRetryDelay bool) error {
 
 	shouldRemove := p.shouldRemoveExportedRecordsFromStore()
 	exportResult, err := p.config.Exporter.Export(ctx, recordsToExport)
+	auditMetricsInstance().recordExportDuration(ctx, time.Since(exportStart))
 	if err != nil {
 		p.handleExportFailure(recordsToExport, err)
 		return err
 	}
+	auditMetricsInstance().recordExported(ctx, int64(len(recordsToExport)))
 	p.storeFlushReceipts(exportResult.Receipts)
 	p.currentRetryAttempt.Store(0)
 	p.lastRetryTimestamp.Store(0)
@@ -580,6 +592,7 @@ func (p *AuditLogProcessor) handleExportFailure(records []Record, cause error) {
 
 	maxAttempts := p.config.RetryPolicy.MaxAttempts
 	if maxAttempts > 0 && int(nextAttempt) > maxAttempts {
+		auditMetricsInstance().recordDropped(context.Background(), int64(len(records)))
 		p.config.ExceptionHandler.Handle(&AuditException{
 			Message:    fmt.Sprintf("Failed to export audit log records after %d retry attempts", maxAttempts),
 			Cause:      cause,
@@ -596,9 +609,14 @@ func (p *AuditLogProcessor) handleExportFailure(records []Record, cause error) {
 		LogRecords: records,
 	})
 
+	cloned := make([]Record, len(records))
+	for i := range records {
+		cloned[i] = records[i].Clone()
+	}
 	p.queueMutex.Lock()
-	p.queue = append(p.queue, records...)
+	p.queue = append(p.queue, cloned...)
 	p.queueMutex.Unlock()
+	auditMetricsInstance().adjustQueueDepth(context.Background(), int64(len(cloned)))
 }
 
 func (p *AuditLogProcessor) ForceFlush(ctx context.Context) error {

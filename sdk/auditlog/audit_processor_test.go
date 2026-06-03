@@ -40,7 +40,9 @@ func (m *MockExporter) Export(ctx context.Context, records []Record) (ExportResu
 	defer m.mutex.Unlock()
 
 	recordsCopy := make([]Record, len(records))
-	copy(recordsCopy, records)
+	for i := range records {
+		recordsCopy[i] = records[i].Clone()
+	}
 	m.exportedRecords = append(m.exportedRecords, recordsCopy)
 
 	if m.exportError != nil {
@@ -68,7 +70,9 @@ func (m *MockExporter) GetExportedRecords() [][]Record {
 	result := make([][]Record, len(m.exportedRecords))
 	for i, batch := range m.exportedRecords {
 		result[i] = make([]Record, len(batch))
-		copy(result[i], batch)
+		for j := range batch {
+			result[i][j] = batch[j].Clone()
+		}
 	}
 	return result
 }
@@ -1563,5 +1567,50 @@ func TestAuditLogProcessorMaxAttemptsStopsRequeue(t *testing.T) {
 	}
 	if !maxMsg {
 		t.Fatalf("expected max-attempts exception, got %#v", handler.GetExceptions())
+	}
+}
+
+func TestAuditLogProcessorQueueClonePreservesAttributes(t *testing.T) {
+	exporter := NewMockExporter()
+	store := NewAuditLogInMemoryStore()
+	builder, err := NewAuditLogProcessorBuilder(exporter, store)
+	if err != nil {
+		t.Fatal(err)
+	}
+	processor, err := builder.
+		SetScheduleDelay(50 * time.Millisecond).
+		SetMaxExportBatchSize(1).
+		Build()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = processor.Shutdown(context.Background()) }()
+
+	rec := Record{}
+	now := time.Now().UTC()
+	rec.SetTimestamp(now)
+	rec.SetObservedTimestamp(now)
+	rec.SetBody(log.StringValue(`{"k":1}`))
+	rec.SetEventName("queue.clone.test")
+	rec.AddAttributes(log.String("audit.record.id", "queue-clone-1"), log.String("audit.marker", "keep-me"))
+
+	if err := processor.OnEmit(context.Background(), &rec); err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(150 * time.Millisecond)
+	batches := exporter.GetExportedRecords()
+	if len(batches) != 1 || len(batches[0]) != 1 {
+		t.Fatalf("expected one exported record, got %d batches", len(batches))
+	}
+	exported := batches[0][0]
+	if got := exported.Body().String(); got != `{"k":1}` {
+		t.Fatalf("body: got %q", got)
+	}
+	if exported.EventName() != "queue.clone.test" {
+		t.Fatalf("event name: got %q", exported.EventName())
+	}
+	rec.SetBody(log.StringValue(`{"k":9}`))
+	if got := exported.Body().String(); got != `{"k":1}` {
+		t.Fatalf("exported body changed after mutating source: got %q", got)
 	}
 }

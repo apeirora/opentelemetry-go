@@ -41,7 +41,8 @@ type httpExporter struct {
 
 func (e *httpExporter) Export(ctx context.Context, records []auditlog.Record) (auditlog.ExportResult, error) {
 	if err := e.inner.Export(ctx, records); err != nil {
-		if msg := err.Error(); strings.Contains(msg, "partial") || strings.Contains(msg, "rejected") {
+		msg := err.Error()
+		if strings.Contains(msg, "OTLP partial success") || strings.Contains(strings.ToLower(msg), "partial_success") {
 			return auditlog.ExportResult{}, fmt.Errorf("audit: export failed (partial_success not allowed): %w", err)
 		}
 		return auditlog.ExportResult{}, err

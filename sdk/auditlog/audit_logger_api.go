@@ -153,6 +153,8 @@ func (l *auditLogger) EmitWithResult(ctx context.Context, record AuditRecord) Au
 	if otelRecord.ObservedTimestamp().IsZero() {
 		otelRecord.SetObservedTimestamp(time.Now())
 	}
+	record.SetObservedTimestamp(otelRecord.ObservedTimestamp())
+	warnAuditRecordTimestampSkew(record, defaultAuditTimestampSkew)
 	otelRecord.SetEventName(record.EventName)
 	targetID, targetType := auditTargetFields(record)
 	auditAttrs := []log.KeyValue{
@@ -220,6 +222,7 @@ func (l *auditLogger) EmitWithResult(ctx context.Context, record AuditRecord) Au
 			return result
 		}
 	}
+	auditMetricsInstance().recordEmitted(ctx, 1)
 	if l.provider.shouldWaitOnExport() {
 		for _, p := range l.provider.processors {
 			if err := p.ForceFlush(ctx); err != nil {
@@ -543,6 +546,8 @@ func NewAuditLoggerProvider(opts ...AuditLoggerProviderOption) *AuditLoggerProvi
 		lim := rate.Limit(cfg.maxRequestsPerSecond)
 		p.rateLimiter = rate.NewLimiter(lim, cfg.maxRequestsPerSecond)
 	}
+	warnAuditClockSyncOnce()
+	_ = auditMetricsInstance()
 	return p
 }
 
