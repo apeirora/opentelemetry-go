@@ -44,11 +44,12 @@ type canonicalAuditRecord struct {
 }
 
 // SignAuditRecordHMAC computes HMAC integrity for a record using JCS canonicalization.
-func SignAuditRecordHMAC(record AuditRecord, key []byte, configuredHashAlgorithm string, clearHash bool) (AuditRecord, error) {
-	return signAuditRecordHMAC(record, key, configuredHashAlgorithm, clearHash)
+func SignAuditRecordHMAC(record AuditRecord, key []byte, configuredHashAlgorithm string) (AuditRecord, error) {
+	return signAuditRecordHMAC(record, key, configuredHashAlgorithm)
 }
 
-func signAuditRecordHMAC(record AuditRecord, key []byte, configuredHashAlgorithm string, clearHash bool) (AuditRecord, error) {
+func signAuditRecordHMAC(record AuditRecord, key []byte, configuredHashAlgorithm string) (AuditRecord, error) {
+	normalizeAuditRecordFields(&record)
 	if len(key) == 0 {
 		return AuditRecord{}, fmt.Errorf("hmac key is required for signing")
 	}
@@ -64,10 +65,6 @@ func signAuditRecordHMAC(record AuditRecord, key []byte, configuredHashAlgorithm
 	mac := hmac.New(h, key)
 	_, _ = mac.Write(payload)
 	sum := mac.Sum(nil)
-	if clearHash {
-		record.Hash = ""
-	}
-	record.HMAC = strings.ToLower(hex.EncodeToString(sum))
 	record.IntegrityValue = encodeIntegrityValue(sum)
 	record.IntegrityAlgorithm = hmacIntegrityAlgorithm(alg)
 	return record, nil
@@ -83,7 +80,8 @@ func signAuditRecordHash(record AuditRecord, configuredHashAlgorithm string) (Au
 	if err != nil {
 		return AuditRecord{}, err
 	}
-	record.Hash = strings.ToLower(hashHex)
+	record.IntegrityValue = strings.ToLower(hashHex)
+	record.IntegrityAlgorithm = hashIntegrityAlgorithm(alg)
 	return record, nil
 }
 
@@ -99,7 +97,8 @@ func signAuditRecordSignature(record AuditRecord, signer AuditSignatureSigner) (
 	if err != nil {
 		return AuditRecord{}, err
 	}
-	record.Signature = sig
+	record.IntegrityValue = sig
+	record.IntegrityAlgorithm = "ES256"
 	return record, nil
 }
 
@@ -110,24 +109,30 @@ func verifyAuditIntegrity(
 	configuredHashAlgorithm string,
 	defaultSignContent AuditSignContent,
 ) error {
+	if record.IntegrityValue == "" {
+		return nil
+	}
 	payload, err := jcsSigningPayload(record)
 	if err != nil {
 		return err
 	}
-	alg := resolveHashAlgorithm(record, configuredHashAlgorithm)
-	if record.Hash != "" {
-		hashHex, herr := computeHashHex(alg, payload)
+	integrityAlg := strings.TrimSpace(record.IntegrityAlgorithm)
+	if isHashIntegrityAlgorithm(integrityAlg) {
+		hashAlg := normalizeHashAlgorithm(integrityAlg)
+		hashHex, herr := computeHashHex(hashAlg, payload)
 		if herr != nil {
 			return newAuditStatusError(AuditErrorInvalidRequest, "invalid hash algorithm", false, herr)
 		}
-		if !hmac.Equal([]byte(strings.ToLower(hashHex)), []byte(strings.ToLower(record.Hash))) {
-			return newAuditStatusError(AuditErrorInvalidRequest, "audit hash verification failed", false, nil)
+		if !hmac.Equal([]byte(strings.ToLower(hashHex)), []byte(strings.ToLower(record.IntegrityValue))) {
+			return newAuditStatusError(AuditErrorInvalidRequest, "audit.integrity.value hash verification failed", false, nil)
 		}
+		return nil
 	}
-	if record.HMAC != "" || record.IntegrityValue != "" {
+	if isMACIntegrityAlgorithm(integrityAlg) {
 		if len(hmacKey) == 0 {
-			return newAuditStatusError(AuditErrorInvalidRequest, "audit hmac present but no verification key configured", false, nil)
+			return newAuditStatusError(AuditErrorInvalidRequest, "audit.integrity.value present but no verification key configured", false, nil)
 		}
+		alg := resolveHashAlgorithm(record, configuredHashAlgorithm)
 		h, err := hmacHasherForAlgorithm(alg)
 		if err != nil {
 			return newAuditStatusError(AuditErrorInvalidRequest, "invalid hmac algorithm", false, err)
@@ -135,33 +140,20 @@ func verifyAuditIntegrity(
 		mac := hmac.New(h, hmacKey)
 		_, _ = mac.Write(payload)
 		macSum := mac.Sum(nil)
-		if record.HMAC != "" {
-			macHex := hex.EncodeToString(macSum)
-			if !hmac.Equal([]byte(strings.ToLower(macHex)), []byte(strings.ToLower(record.HMAC))) {
-				return newAuditStatusError(AuditErrorInvalidRequest, "audit hmac verification failed", false, nil)
-			}
+		want, err := decodeIntegrityValueHMAC(record.IntegrityValue)
+		if err != nil {
+			return newAuditStatusError(AuditErrorInvalidRequest, "invalid audit.integrity.value", false, err)
 		}
-		if record.IntegrityValue != "" {
-			want, err := decodeIntegrityValueHMAC(record.IntegrityValue)
-			if err != nil {
-				return newAuditStatusError(AuditErrorInvalidRequest, "invalid audit.integrity.value", false, err)
-			}
-			if !hmac.Equal(want, macSum) {
-				return newAuditStatusError(AuditErrorInvalidRequest, "audit.integrity.value verification failed", false, nil)
-			}
+		if !hmac.Equal(want, macSum) {
+			return newAuditStatusError(AuditErrorInvalidRequest, "audit.integrity.value verification failed", false, nil)
 		}
+		return nil
 	}
-	if record.Signature != "" {
-		if signatureVerifier == nil {
-			return newAuditStatusError(AuditErrorInvalidRequest, "audit signature present but no signature verifier configured", false, nil)
-		}
-		payload, perr := jcsSigningPayload(record)
-		if perr != nil {
-			return perr
-		}
-		if err := signatureVerifier(record, payload); err != nil {
-			return newAuditStatusError(AuditErrorInvalidRequest, "audit signature verification failed", false, err)
-		}
+	if signatureVerifier == nil {
+		return newAuditStatusError(AuditErrorInvalidRequest, "audit.integrity.value present but no signature verifier configured", false, nil)
+	}
+	if err := signatureVerifier(record, payload); err != nil {
+		return newAuditStatusError(AuditErrorInvalidRequest, "audit.integrity.value signature verification failed", false, err)
 	}
 	return nil
 }

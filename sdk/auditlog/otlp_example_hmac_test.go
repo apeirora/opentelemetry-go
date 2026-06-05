@@ -4,6 +4,7 @@
 package auditlog
 
 import (
+	"encoding/hex"
 	"os"
 	"path/filepath"
 	"strings"
@@ -18,7 +19,7 @@ const (
 	exampleTimestamp = "2026-05-19T12:36:04.2396044Z"
 	exampleBody      = `{"event":"user.login","n":0,"id":"rec-e4c39188-a682-4dc2-a17b-9e5ba0ab7a0a"}`
 
-	wantMetaSignHMACHex = "932f89b5c75f3f38b97c71f2e47fe016f7aa5987719124b240816228b8eae45b"
+	wantMetaSignHMACHex = "f031e1fc46edcae91e3dbced756a46a5c3c913078351bd95fb37119e3b7a407c"
 	wantBodySignHMACHex = "016924ece22de4e77299c22300d9a1b42533e0cc5ce707f3835bb0fdca3a80f4"
 )
 
@@ -53,7 +54,7 @@ func exampleRecordForHMAC() AuditRecord {
 		EventName:     "user.login",
 		Actor:         log.StringValue("alice@example.com"),
 		ActorType:     "user",
-		Action:        "login",
+		Action:        "LOGIN",
 		Resource:      log.StringValue("/api/widgets"),
 		Outcome:       "success",
 		SourceIP:      "192.0.2.10",
@@ -71,22 +72,30 @@ func exampleRecordForBodyHMAC() AuditRecord {
 
 func TestOTLPAuditLoginHMACBodyWithDevKeyFile(t *testing.T) {
 	key := loadTestappHMACKey(t)
-	signed, err := signAuditRecordHMAC(exampleRecordForBodyHMAC(), key, "sha256", true)
+	signed, err := signAuditRecordHMAC(exampleRecordForBodyHMAC(), key, "sha256")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if signed.HMAC != wantBodySignHMACHex {
-		t.Fatalf("body sign hmac: got %s want %s", signed.HMAC, wantBodySignHMACHex)
+	if got := integrityHMACHex(signed); got != wantBodySignHMACHex {
+		t.Fatalf("body sign hmac: got %s want %s", got, wantBodySignHMACHex)
 	}
 }
 
 func TestOTLPAuditLoginHMACWithDevKeyFile(t *testing.T) {
 	key := loadTestappHMACKey(t)
-	signed, err := signAuditRecordHMAC(exampleRecordForHMAC(), key, "sha256", true)
+	signed, err := signAuditRecordHMAC(exampleRecordForHMAC(), key, "sha256")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if signed.HMAC != wantMetaSignHMACHex {
-		t.Fatalf("meta sign hmac: got %s want %s", signed.HMAC, wantMetaSignHMACHex)
+	if got := integrityHMACHex(signed); got != wantMetaSignHMACHex {
+		t.Fatalf("meta sign hmac: got %s want %s", got, wantMetaSignHMACHex)
 	}
+}
+
+func integrityHMACHex(record AuditRecord) string {
+	mac, err := decodeIntegrityValueHMAC(record.IntegrityValue)
+	if err != nil {
+		return ""
+	}
+	return hex.EncodeToString(mac)
 }

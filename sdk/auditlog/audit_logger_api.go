@@ -10,9 +10,9 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/google/uuid"
 	"go.opentelemetry.io/otel/audit"
 	"go.opentelemetry.io/otel/log"
+	sdkresource "go.opentelemetry.io/otel/sdk/resource"
 	"golang.org/x/time/rate"
 )
 
@@ -51,9 +51,7 @@ const (
 	auditAttrOutcome       = "audit.outcome"
 	auditAttrSourceID      = "audit.source.id"
 	auditAttrRecordID      = "audit.record.id"
-	auditAttrIntegrityValue     = "audit.integrity.value"
 	auditAttrSchemaVersion = "audit.schema.version"
-	auditAttrKeyID         = "audit.integrity.certificate"
 	auditAttrSequenceNo    = "audit.sequence.number"
 	auditAttrPrevHash      = "audit.prev.hash"
 )
@@ -98,23 +96,21 @@ func (l *auditLogger) Emit(ctx context.Context, record AuditRecord) (audit.Audit
 		return audit.AuditReceipt{}, newAuditStatusError(AuditErrorUnavailable, result.Reason, true, nil)
 	}
 	return audit.AuditReceipt{
-		RecordID:      result.RecordID,
-		IntegrityHash: result.Hash,
-		SinkTimestamp: result.SinkTimestamp,
+		RecordID:           result.RecordID,
+		IntegrityHash:      result.Hash,
+		SinkTimestamp:      result.SinkTimestamp,
+		SinkTimestampNanos: uint64(result.SinkTimestamp.UnixNano()),
 	}, nil
 }
 
 func (l *auditLogger) EmitWithResult(ctx context.Context, record AuditRecord) AuditEmitResult {
-	if record.RecordID == "" {
-		record.RecordID = uuid.NewString()
+	normalizeAuditRecordFields(&record)
+	if err := ensureAuditRecordID(&record); err != nil {
+		result := AuditEmitResult{RecordID: record.RecordID}
+		result.StatusCode, result.Status, result.Reason = mapAuditError(err)
+		return result
 	}
-	if record.RecordID == "" {
-  	  record.RecordID = uuid.NewString()
-	}
-	result := AuditEmitResult{
-		RecordID: record.RecordID,
-		Hash:     record.Hash,
-	}
+	result := AuditEmitResult{RecordID: record.RecordID}
 	if l.provider.stopped.Load() {
 		err := newAuditStatusError(AuditErrorUnavailable, "provider_shutdown", true, nil)
 		result.StatusCode, result.Status, result.Reason = mapAuditError(err)
@@ -135,8 +131,11 @@ func (l *auditLogger) EmitWithResult(ctx context.Context, record AuditRecord) Au
 		)
 		return result
 	}
-	result.Hash = record.Hash
 	if err := validateRequiredAuditRecord(record, l.provider); err != nil {
+		result.StatusCode, result.Status, result.Reason = mapAuditError(err)
+		return result
+	}
+	if err := validateAuditRecordSpec(record); err != nil {
 		result.StatusCode, result.Status, result.Reason = mapAuditError(err)
 		return result
 	}
@@ -151,12 +150,19 @@ func (l *auditLogger) EmitWithResult(ctx context.Context, record AuditRecord) Au
 		return result
 	}
 	otelRecord := record.Record.Clone()
+	prepareAuditLogRecord(&otelRecord)
 	if otelRecord.ObservedTimestamp().IsZero() {
 		otelRecord.SetObservedTimestamp(time.Now())
 	}
 	record.SetObservedTimestamp(otelRecord.ObservedTimestamp())
 	warnAuditRecordTimestampSkew(record, defaultAuditTimestampSkew)
 	otelRecord.SetEventName(record.EventName)
+	res, err := l.provider.auditResourceForRecord(record)
+	if err != nil {
+		result.StatusCode, result.Status, result.Reason = mapAuditError(err)
+		return result
+	}
+	otelRecord.SetResource(res)
 	targetID, targetType := auditTargetFields(record)
 	auditAttrs := []log.KeyValue{
 		log.KeyValue{Key: auditAttrActor, Value: record.Actor},
@@ -180,20 +186,8 @@ func (l *auditLogger) EmitWithResult(ctx context.Context, record AuditRecord) Au
 	if record.SourceIP != "" {
 		otelRecord.AddAttributes(log.String(auditAttrSourceID, record.SourceIP))
 	}
-	if l.provider.exportIntegrity.AnySet() {
-		if record.IntegrityValue != "" {
-			otelRecord.AddAttributes(log.String(auditAttrIntegrityValue, record.IntegrityValue))
-		}
-		if record.IntegrityAlgorithm != "" {
-			otelRecord.AddAttributes(log.String(auditAttrIntegrityAlgorithm, record.IntegrityAlgorithm))
-		}
-		cert := record.IntegrityCertificate
-		if cert == "" {
-			cert = record.KeyID
-		}
-		if cert != "" {
-			otelRecord.AddAttributes(log.String(auditAttrIntegrityCertificate, cert))
-		}
+	if l.provider.exportIntegrity.AnySet() && record.IntegrityValue != "" {
+		otelRecord.AddAttributes(log.String(auditAttrIntegrityValue, record.IntegrityValue))
 	}
 	if record.SequenceNo > 0 {
 		otelRecord.AddAttributes(log.Int64(auditAttrSequenceNo, record.SequenceNo))
@@ -203,9 +197,6 @@ func (l *auditLogger) EmitWithResult(ctx context.Context, record AuditRecord) Au
 	}
 	if record.SourceType != "" {
 		otelRecord.AddAttributes(log.String(auditAttrSourceType, record.SourceType))
-	}
-	if mode := strings.TrimSpace(record.SignContent); mode != "" {
-		otelRecord.AddAttributes(log.String(auditAttrSignContent, mode))
 	}
 	queuedAt := time.Now().UTC()
 	for _, p := range l.provider.processors {
@@ -290,6 +281,9 @@ func validateRequiredAuditRecord(record AuditRecord, p *AuditLoggerProvider) err
 
 type AuditLoggerProvider struct {
 	processors            []AuditRecordProcessor
+	resource              *sdkresource.Resource
+	resourceIntegrityAlgorithm   string
+	resourceIntegrityCertificate string
 	hmacVerificationKey   []byte
 	signatureVerifier     AuditSignatureVerifier
 	signatureSigner       AuditSignatureSigner
@@ -326,6 +320,9 @@ type AuditIntegrityEnricher func(ctx context.Context, record AuditRecord) (Audit
 
 type auditProviderConfig struct {
 	processors            []AuditRecordProcessor
+	resource              *sdkresource.Resource
+	resourceIntegrityAlgorithm   string
+	resourceIntegrityCertificate string
 	hmacVerificationKey   []byte
 	signatureVerifier     AuditSignatureVerifier
 	signatureSigner       AuditSignatureSigner
@@ -352,6 +349,21 @@ type auditLoggerProviderOptionFunc func(auditProviderConfig) auditProviderConfig
 
 func (f auditLoggerProviderOptionFunc) apply(c auditProviderConfig) auditProviderConfig {
 	return f(c)
+}
+
+func WithAuditResource(res *sdkresource.Resource) AuditLoggerProviderOption {
+	return auditLoggerProviderOptionFunc(func(cfg auditProviderConfig) auditProviderConfig {
+		cfg.resource = res
+		return cfg
+	})
+}
+
+func WithAuditIntegrityResource(algorithm, certificate string) AuditLoggerProviderOption {
+	return auditLoggerProviderOptionFunc(func(cfg auditProviderConfig) auditProviderConfig {
+		cfg.resourceIntegrityAlgorithm = strings.TrimSpace(algorithm)
+		cfg.resourceIntegrityCertificate = strings.TrimSpace(certificate)
+		return cfg
+	})
 }
 
 func WithAuditRecordProcessor(processor AuditRecordProcessor) AuditLoggerProviderOption {
@@ -523,8 +535,11 @@ func NewAuditLoggerProvider(opts ...AuditLoggerProviderOption) *AuditLoggerProvi
 	}
 	autoSign, required, export, signContent := resolveAuditProviderIntegrity(cfg)
 	p := &AuditLoggerProvider{
-		processors:            cfg.processors,
-		hmacVerificationKey:   cfg.hmacVerificationKey,
+		processors:                   cfg.processors,
+		resource:                     cfg.resource,
+		resourceIntegrityAlgorithm:   cfg.resourceIntegrityAlgorithm,
+		resourceIntegrityCertificate: cfg.resourceIntegrityCertificate,
+		hmacVerificationKey:          cfg.hmacVerificationKey,
 		signatureVerifier:     cfg.signatureVerifier,
 		signatureSigner:       cfg.signatureSigner,
 		hashAlgorithm:         cfg.hashAlgorithm,
@@ -674,9 +689,6 @@ type AuditRecord struct {
 	Outcome    string
 	SourceIP  string
 	RecordID  string
-	Hash      string
-	Signature string
-	HMAC      string
 	IntegrityValue       string
 	IntegrityAlgorithm   string
 	IntegrityCertificate string

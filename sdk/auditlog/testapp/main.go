@@ -424,9 +424,8 @@ func formatLogValue(v log.Value) string {
 }
 
 func malformedAuditRecord(rec auditlog.AuditRecord) auditlog.AuditRecord {
-	rec.HMAC = "0000000000000000000000000000000000000000000000000000000000000000"
-	rec.Hash = "0000000000000000000000000000000000000000000000000000000000000000"
-	rec.Signature = "invalid-audit-signature"
+	rec.IntegrityValue = "invalid-audit-integrity"
+	rec.IntegrityAlgorithm = "HMAC-SHA256"
 	return rec
 }
 

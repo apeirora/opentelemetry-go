@@ -30,9 +30,6 @@ type AuditRecord struct {
 	SequenceNo    int64
 	PrevHash      string
 
-	Hash                   string
-	HMAC                   string
-	Signature              string
 	IntegrityValue         string
 	IntegrityAlgorithm     string
 	IntegrityCertificate   string

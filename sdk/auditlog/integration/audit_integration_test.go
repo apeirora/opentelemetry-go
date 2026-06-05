@@ -207,7 +207,8 @@ func TestAuditIntegrationIntegrityAndDeliverySemantics(t *testing.T) {
 	}
 
 	invalidHMAC := makeValidAuditRecordForTest(t, "invalid-hmac", hmacKey)
-	invalidHMAC.HMAC = "bad-hmac"
+	invalidHMAC.IntegrityValue = "bad-hmac"
+	invalidHMAC.IntegrityAlgorithm = "HMAC-SHA256"
 	invalidHMACResult := logger.EmitWithResult(context.Background(), invalidHMAC)
 	if invalidHMACResult.StatusCode != 400 {
 		t.Fatalf("expected 400 for invalid hmac, got %d", invalidHMACResult.StatusCode)
@@ -341,8 +342,9 @@ func TestAuditIntegrationSignatureVerifierSemantics(t *testing.T) {
 		auditlog.WithAuditRecordProcessor(processor),
 		auditlog.WithAuditHMACVerificationKey(hmacKey),
 		auditlog.WithAuditHashAlgorithm("sha256"),
+		auditlog.WithAuditAutoSignIntegrity(0),
 		auditlog.WithAuditSignatureVerifier(func(record auditlog.AuditRecord, canonicalPayload []byte) error {
-			if record.Signature == "good-signature" {
+			if record.IntegrityValue == "good-signature" {
 				return nil
 			}
 			return errors.New("invalid signature")
@@ -351,7 +353,8 @@ func TestAuditIntegrationSignatureVerifierSemantics(t *testing.T) {
 	logger := provider.Logger("audit-signature")
 
 	valid := makeValidAuditRecordForTest(t, "sig-valid", hmacKey)
-	valid.Signature = "good-signature"
+	valid.IntegrityValue = "good-signature"
+	valid.IntegrityAlgorithm = "ES256"
 	validResult := logger.EmitWithResult(context.Background(), valid)
 	if validResult.StatusCode != 200 {
 		t.Fatalf("expected 200 for valid signature, got %d", validResult.StatusCode)
@@ -361,7 +364,8 @@ func TestAuditIntegrationSignatureVerifierSemantics(t *testing.T) {
 	}
 
 	invalid := makeValidAuditRecordForTest(t, "sig-invalid", hmacKey)
-	invalid.Signature = "bad-signature"
+	invalid.IntegrityValue = "bad-signature"
+	invalid.IntegrityAlgorithm = "ES256"
 	invalidResult := logger.EmitWithResult(context.Background(), invalid)
 	if invalidResult.StatusCode != 400 {
 		t.Fatalf("expected 400 for invalid signature, got %d", invalidResult.StatusCode)
@@ -471,10 +475,22 @@ type canonicalAuditRecord struct {
 	PrevHash      string               `json:"prev_hash,omitempty"`
 }
 
+func integrationRecordID(seed int) string {
+	return fmt.Sprintf("550e8400-e29b-41d4-a716-%012x", 0x1000+seed)
+}
+
+func integrationRecordIDFromSuffix(suffix string) string {
+	var seed uint64
+	for _, c := range suffix {
+		seed = seed*31 + uint64(c)
+	}
+	return fmt.Sprintf("550e8400-e29b-41d4-a716-%012x", seed%0xffffffffffff)
+}
+
 func makeAutoSignedAuditRecordDuplicateRecordIDAttr(t *testing.T, i int) auditlog.AuditRecord {
 	t.Helper()
 	now := time.Now().UTC()
-	rid := fmt.Sprintf("rec-dup-%d-%d", i, now.UnixNano())
+	rid := integrationRecordID(i)
 	base := logtest.RecordFactory{
 		Timestamp:                 now,
 		ObservedTimestamp:         now,
@@ -492,7 +508,7 @@ func makeAutoSignedAuditRecordDuplicateRecordIDAttr(t *testing.T, i int) auditlo
 		EventName:     "user.login",
 		Actor:         log.StringValue("alice@example.com"),
 		ActorType:     "user",
-		Action:        "login",
+		Action:        "LOGIN",
 		Resource:      log.StringValue("/api/widgets"),
 		Outcome:       "success",
 		SourceIP:      "192.0.2.10",
@@ -521,15 +537,15 @@ func makeValidAuditRecordForTest(t *testing.T, suffix string, hmacKey []byte) au
 		EventName:     "user.login",
 		Actor:         log.StringValue("actor"),
 		ActorType:     "user",
-		Action:        "login",
+		Action:        "LOGIN",
 		Resource:      log.StringValue("resource"),
 		Outcome:       "success",
-		RecordID:      fmt.Sprintf("record-%s", suffix),
+		RecordID:      integrationRecordIDFromSuffix(suffix),
 		SchemaVersion: "1.0",
 		HashAlgorithm: "sha256",
 	}
 
-	signed, err := auditlog.SignAuditRecordHMAC(record, hmacKey, "sha256", true)
+	signed, err := auditlog.SignAuditRecordHMAC(record, hmacKey, "sha256")
 	if err != nil {
 		t.Fatalf("failed to sign audit record: %v", err)
 	}

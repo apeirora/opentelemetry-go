@@ -25,8 +25,7 @@ const (
 
 func isIntegrityAttributeKey(key string) bool {
 	switch key {
-	case auditAttrIntegrityValue, auditAttrIntegrityAlgorithm, auditAttrIntegrityCertificate,
-		auditAttrHMAC, auditAttrHash, auditAttrSignature:
+	case auditAttrIntegrityValue, auditAttrIntegrityAlgorithm, auditAttrIntegrityCertificate:
 		return true
 	default:
 		return strings.HasPrefix(key, "audit.integrity.")

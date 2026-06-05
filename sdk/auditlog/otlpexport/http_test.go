@@ -67,7 +67,7 @@ func TestNewHTTPPostsToV1AuditPath(t *testing.T) {
 		Timestamp:         now,
 		ObservedTimestamp: now,
 		Body:              log.StringValue(`{"n":1}`),
-		Attributes:        []log.KeyValue{log.String("audit.record.id", "otlp-path-test-1")},
+		Attributes:        []log.KeyValue{log.String("audit.record.id", "550e8400-e29b-41d4-a716-446655440020")},
 	}.NewRecord()
 	rec := auditlog.AuditRecord{
 		Record:    base,
@@ -76,7 +76,7 @@ func TestNewHTTPPostsToV1AuditPath(t *testing.T) {
 		ActorType: "user",
 		Action:    "EMIT",
 		Outcome:   "success",
-		RecordID:  "otlp-path-test-1",
+		RecordID:  "550e8400-e29b-41d4-a716-446655440020",
 	}
 
 	if _, err := provider.Logger("otlp").Emit(context.Background(), rec); err != nil {
@@ -141,7 +141,7 @@ func TestNewHTTPWrongPathNotAccepted(t *testing.T) {
 		Timestamp:         now,
 		ObservedTimestamp: now,
 		Body:              log.StringValue(`{"n":2}`),
-		Attributes:        []log.KeyValue{log.String("audit.record.id", "otlp-wrong-path-1")},
+		Attributes:        []log.KeyValue{log.String("audit.record.id", "550e8400-e29b-41d4-a716-446655440021")},
 	}.NewRecord()
 	rec := auditlog.AuditRecord{
 		Record:    base,
@@ -150,7 +150,7 @@ func TestNewHTTPWrongPathNotAccepted(t *testing.T) {
 		ActorType: "user",
 		Action:    "EMIT",
 		Outcome:   "success",
-		RecordID:  "otlp-wrong-path-1",
+		RecordID:  "550e8400-e29b-41d4-a716-446655440021",
 	}
 
 	_, err = provider.Logger("otlp").Emit(context.Background(), rec)

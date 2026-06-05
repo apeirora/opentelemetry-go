@@ -12,9 +12,8 @@ import (
 )
 
 const (
-	attrRecordID = "audit.record.id"
-	attrHash     = "audit.hash"
-	attrHMAC     = "audit.hmac"
+	attrRecordID       = "audit.record.id"
+	attrIntegrityValue = "audit.integrity.value"
 )
 
 func GetRecordID(record *sdklog.Record) (string, error) {
@@ -51,10 +50,7 @@ func GetRecordHash(record *sdklog.Record) string {
 	if record == nil {
 		return ""
 	}
-	if h := recordIntegrityAttr(record, attrHMAC); h != "" {
-		return h
-	}
-	return recordIntegrityAttr(record, attrHash)
+	return recordIntegrityAttr(record, attrIntegrityValue)
 }
 
 func recordIntegrityAttr(record *sdklog.Record, key string) string {

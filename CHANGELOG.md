@@ -11,6 +11,7 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 ### Changed
 
 - In `go.opentelemetry.io/otel/sdk/auditlog`, align exported attribute keys with dotted audit naming (`audit.actor.id`, `audit.target.id`, `audit.record.id`, and related fields), remove `Enabled` from `AuditLogger` and `AuditRecordProcessor`, relax body/schema validation, auto-generate missing record IDs, and export queued records in FIFO order instead of severity priority.
+- In `go.opentelemetry.io/otel/sdk/auditlog`, align LogRecord export with the audit log spec: validate `audit.record.id` as UUID v4, normalize `action`/`actor.type`/`outcome` casing, omit severity on exported records, place `audit.integrity.algorithm` and `audit.integrity.certificate` on the resource (export only `audit.integrity.value` on the record), and add `SinkTimestampNanos` to `AuditReceipt`.
 
 ### Added
 
@@ -23,6 +24,8 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 - In `go.opentelemetry.io/otel/sdk/auditlog`, add `AuditStorageWriteMode` with builder `SetStorageWriteMode` to choose between `AuditStorageWriteAlways` (default) and `AuditStorageWriteOnError` (persist only after failed export attempts).
 - In `go.opentelemetry.io/otel/sdk/auditlog`, add `RetryPolicy.MaxAttempts` to cap export retry cycles (zero means unlimited).
 - In `go.opentelemetry.io/otel/sdk/auditlog`, `AuditLogProcessor` uses a single background export worker with coalesced wakeups instead of spawning unbounded export goroutines.
+- In `go.opentelemetry.io/otel/sdk/auditlog`, add `WithAuditResource` and `WithAuditIntegrityResource` provider options for resource-level audit metadata and integrity attributes.
+- Add `SetResource` on `go.opentelemetry.io/otel/sdk/log.Record` so per-record resource overrides can be attached before export.
 - Add `ByteSlice` and `ByteSliceValue` functions for new `BYTESLICE` attribute type in `go.opentelemetry.io/otel/attribute`. (#7948)
 - Apply attribute value limit to the `KindBytes` attribute type in `go.opentelemetry.io/otel/sdk/log`. (#7990)
 - Apply attribute value limit to the `BYTESLICE` attribute type in `go.opentelemetry.io/otel/sdk/trace`. (#7990)
@@ -107,6 +110,7 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 - In `go.opentelemetry.io/otel/sdk/auditlog/storage`, replace in-memory BoltDB and SQL stubs with durable `go.etcd.io/bbolt` and `database/sql` implementations (SQLite via `modernc.org/sqlite`, plus postgres/mysql drivers when registered by the application).
 - In `go.opentelemetry.io/otel/sdk/auditlog`, make integrity proofs optional by default (zero-config providers no longer reject records without HMAC or signature).
 - In `go.opentelemetry.io/otel/sdk/auditlog`, export only spec-aligned integrity attributes (`audit.integrity.value`, `audit.integrity.algorithm`, `audit.integrity.certificate`, `audit.prev.hash`) instead of legacy `audit.hmac`, `audit.signature`, `audit.hash`, `audit.key_id`, and `audit.prev_hash`.
+- In `go.opentelemetry.io/otel/audit` and `go.opentelemetry.io/otel/sdk/auditlog`, remove legacy `Hash`, `HMAC`, and `Signature` record fields; integrity proofs use `IntegrityValue` and `IntegrityAlgorithm` only.
 - In `go.opentelemetry.io/otel/sdk/auditlog`, surface hard errors to synchronous emit callers when export retry budget is exhausted and records are dropped.
 
 <!-- Released section -->

@@ -461,6 +461,11 @@ func (r *Record) SetTraceFlags(flags trace.TraceFlags) {
 	r.traceFlags = flags
 }
 
+// SetResource sets the entity resource for the log record.
+func (r *Record) SetResource(res *resource.Resource) {
+	r.resource = res
+}
+
 // Resource returns the entity that collected the log.
 func (r *Record) Resource() *resource.Resource {
 	return r.resource

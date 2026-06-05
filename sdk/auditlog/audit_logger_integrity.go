@@ -25,8 +25,7 @@ func (p *AuditLoggerProvider) enrichIntegrity(ctx context.Context, record AuditR
 	}
 	record = p.applyDefaultSignContent(record)
 	auto := p.autoSignIntegrity
-	clearHashOnHMAC := auto.Has(AuditIntegrityHMAC) && !auto.Has(AuditIntegrityHash)
-	if auto.Has(AuditIntegrityHash) && record.Hash == "" {
+	if auto.Has(AuditIntegrityHash) && !hasHashIntegrity(record) {
 		var err error
 		if p.hashComputer != nil {
 			record, err = p.hashComputer(record, p.hashAlgorithm)
@@ -37,18 +36,18 @@ func (p *AuditLoggerProvider) enrichIntegrity(ctx context.Context, record AuditR
 			return record, err
 		}
 	}
-	if auto.Has(AuditIntegrityHMAC) && record.HMAC == "" && len(p.hmacVerificationKey) > 0 {
+	if auto.Has(AuditIntegrityHMAC) && !hasMACIntegrity(record) && len(p.hmacVerificationKey) > 0 {
 		var err error
 		if p.hmacSigner != nil {
 			record, err = p.hmacSigner(record, p.hmacVerificationKey, p.hashAlgorithm)
 		} else {
-			record, err = signAuditRecordHMAC(record, p.hmacVerificationKey, p.hashAlgorithm, clearHashOnHMAC)
+			record, err = signAuditRecordHMAC(record, p.hmacVerificationKey, p.hashAlgorithm)
 		}
 		if err != nil {
 			return record, err
 		}
 	}
-	if auto.Has(AuditIntegritySignature) && record.Signature == "" && p.signatureSigner != nil {
+	if auto.Has(AuditIntegritySignature) && !hasSignatureIntegrity(record) && p.signatureSigner != nil {
 		var err error
 		record, err = signAuditRecordSignature(record, p.signatureSigner)
 		if err != nil {
@@ -58,18 +57,34 @@ func (p *AuditLoggerProvider) enrichIntegrity(ctx context.Context, record AuditR
 	return record, nil
 }
 
+func hasHashIntegrity(record AuditRecord) bool {
+	return record.IntegrityValue != "" && isHashIntegrityAlgorithm(record.IntegrityAlgorithm)
+}
+
+func hasMACIntegrity(record AuditRecord) bool {
+	return record.IntegrityValue != "" && isMACIntegrityAlgorithm(record.IntegrityAlgorithm)
+}
+
+func hasSignatureIntegrity(record AuditRecord) bool {
+	if record.IntegrityValue == "" {
+		return false
+	}
+	alg := strings.TrimSpace(record.IntegrityAlgorithm)
+	return alg != "" && !isMACIntegrityAlgorithm(alg) && !isHashIntegrityAlgorithm(alg)
+}
+
 func (p *AuditLoggerProvider) satisfiesRequiredIntegrity(record AuditRecord) bool {
 	req := p.requiredIntegrity
 	if !req.AnySet() {
 		return true
 	}
-	if req.Has(AuditIntegrityHMAC) && (record.HMAC != "" || record.IntegrityValue != "") {
+	if req.Has(AuditIntegrityHMAC) && hasMACIntegrity(record) {
 		return true
 	}
-	if req.Has(AuditIntegrityHash) && record.Hash != "" {
+	if req.Has(AuditIntegrityHash) && hasHashIntegrity(record) {
 		return true
 	}
-	if req.Has(AuditIntegritySignature) && record.Signature != "" {
+	if req.Has(AuditIntegritySignature) && hasSignatureIntegrity(record) {
 		return true
 	}
 	return false

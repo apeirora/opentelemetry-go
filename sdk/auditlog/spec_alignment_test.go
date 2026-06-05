@@ -99,7 +99,7 @@ func TestExportUsesSpecIntegrityAttributesOnly(t *testing.T) {
 		WithAuditExportIntegrity(AuditIntegrityHMAC),
 	)
 	rec := minimalAuditRecordNoTarget()
-	rec.RecordID = "spec-export-id"
+	rec.RecordID = testAuditRecordID(10)
 	result := provider.Logger("spec").EmitWithResult(context.Background(), rec)
 	if result.StatusCode >= 400 {
 		t.Fatalf("emit failed: status %d reason %q", result.StatusCode, result.Reason)
@@ -114,10 +114,81 @@ func TestExportUsesSpecIntegrityAttributesOnly(t *testing.T) {
 			t.Fatalf("legacy attribute %q must not be exported", legacy)
 		}
 	}
-	for _, spec := range []string{"audit.integrity.value", "audit.integrity.algorithm"} {
-		if !attrs[spec] {
-			t.Fatalf("expected spec attribute %q on exported record", spec)
+	if !attrs["audit.integrity.value"] {
+		t.Fatal("expected audit.integrity.value on exported record")
+	}
+	if attrs["audit.integrity.algorithm"] {
+		t.Fatal("audit.integrity.algorithm must be on resource, not record attributes")
+	}
+	res := batch[0].Resource()
+	if res == nil {
+		t.Fatal("expected resource on exported record")
+	}
+	resAttrs := res.Attributes()
+	var hasAlg bool
+	for _, kv := range resAttrs {
+		if string(kv.Key) == auditAttrIntegrityAlgorithm {
+			hasAlg = true
+			if kv.Value.AsString() != "HMAC-SHA256" {
+				t.Fatalf("resource algorithm: got %q", kv.Value.AsString())
+			}
 		}
+		if string(kv.Key) == auditAttrIntegrityCertificate {
+			t.Fatal("audit.integrity.certificate must not be set for HMAC algorithms")
+		}
+	}
+	if !hasAlg {
+		t.Fatal("expected audit.integrity.algorithm on resource")
+	}
+}
+
+func TestAuditRecordSpecNormalization(t *testing.T) {
+	rec := minimalAuditRecordNoTarget()
+	rec.Action = " read "
+	rec.ActorType = "USER"
+	rec.Outcome = "SUCCESS"
+	normalizeAuditRecordFields(&rec)
+	if rec.Action != "READ" {
+		t.Fatalf("action: got %q", rec.Action)
+	}
+	if rec.ActorType != "user" {
+		t.Fatalf("actor type: got %q", rec.ActorType)
+	}
+	if rec.Outcome != "success" {
+		t.Fatalf("outcome: got %q", rec.Outcome)
+	}
+}
+
+func TestEmitClearsSeverityOnExportedRecord(t *testing.T) {
+	provider := NewAuditLoggerProvider()
+	rec := minimalAuditRecordNoTarget()
+	rec.SetSeverity(log.SeverityError)
+	rec.SetSeverityText("ERROR")
+	capture := &captureExporter{}
+	store := NewAuditLogInMemoryStore()
+	builder, err := NewAuditLogProcessorBuilder(capture, store)
+	if err != nil {
+		t.Fatal(err)
+	}
+	processor, err := builder.SetMaxExportBatchSize(1).Build()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = processor.Shutdown(context.Background()) })
+	provider = NewAuditLoggerProvider(WithAuditRecordProcessor(processor))
+	result := provider.Logger("sev").EmitWithResult(context.Background(), rec)
+	if result.StatusCode >= 400 {
+		t.Fatalf("emit failed: %d %q", result.StatusCode, result.Reason)
+	}
+	batch := capture.lastBatch()
+	if len(batch) != 1 {
+		t.Fatal("expected exported batch")
+	}
+	if batch[0].Severity() != 0 {
+		t.Fatalf("severity should be cleared, got %v", batch[0].Severity())
+	}
+	if batch[0].SeverityText() != "" {
+		t.Fatalf("severity text should be cleared, got %q", batch[0].SeverityText())
 	}
 }
 
@@ -149,7 +220,7 @@ func TestSyncEmitFailsWhenRetryBudgetExhausted(t *testing.T) {
 		WithAuditAutoSignIntegrity(AuditIntegrityHMAC),
 	)
 	rec := minimalAuditRecordNoTarget()
-	rec.RecordID = "drop-sync-id"
+	rec.RecordID = testAuditRecordID(11)
 
 	failExporter.mu.Lock()
 	failExporter.exportError = context.DeadlineExceeded
@@ -177,7 +248,7 @@ func TestValidateAuditRecordTargetOptional(t *testing.T) {
 		WithAuditRequiredIntegrity(AuditIntegrityHMAC),
 	)
 	rec := minimalAuditRecordNoTarget()
-	signed, err := SignAuditRecordHMAC(rec, key, "sha256", true)
+	signed, err := SignAuditRecordHMAC(rec, key, "sha256")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -189,12 +260,9 @@ func TestValidateAuditRecordTargetOptional(t *testing.T) {
 func TestSignAuditRecordHMACSetsSpecIntegrityFields(t *testing.T) {
 	key := []byte("integrity-spec-key")
 	rec := minimalAuditRecordNoTarget()
-	signed, err := SignAuditRecordHMAC(rec, key, "sha256", true)
+	signed, err := SignAuditRecordHMAC(rec, key, "sha256")
 	if err != nil {
 		t.Fatal(err)
-	}
-	if signed.HMAC == "" {
-		t.Fatal("expected legacy audit.hmac hex")
 	}
 	if signed.IntegrityValue == "" {
 		t.Fatal("expected audit.integrity.value")
@@ -206,14 +274,14 @@ func TestSignAuditRecordHMACSetsSpecIntegrityFields(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if hex.EncodeToString(mac) != signed.HMAC {
-		t.Fatalf("integrity.value must match hmac bytes: value=%q hmac=%q", signed.IntegrityValue, signed.HMAC)
+	if len(mac) != 32 {
+		t.Fatalf("expected 32-byte HMAC, got %d", len(mac))
 	}
 }
 
 func TestIntegrityHashUsesJCS_SHA256(t *testing.T) {
 	rec := minimalAuditRecordNoTarget()
-	rec.RecordID = "jcs-record-1"
+	rec.RecordID = testAuditRecordID(12)
 	payload, err := jcsSigningPayload(rec)
 	if err != nil {
 		t.Fatal(err)
@@ -254,13 +322,14 @@ func TestSyncEmitDeliveredReturnsAuditReceipt(t *testing.T) {
 		WithAuditExportIntegrity(AuditIntegrityHMAC),
 	)
 	rec := minimalAuditRecordNoTarget()
-	rec.RecordID = "sync-receipt-id"
+	syncID := testAuditRecordID(13)
+	rec.RecordID = syncID
 
 	receipt, err := provider.Logger("sync").Emit(context.Background(), rec)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if receipt.RecordID != "sync-receipt-id" {
+	if receipt.RecordID != syncID {
 		t.Fatalf("receipt record id: got %q", receipt.RecordID)
 	}
 	if receipt.IntegrityHash == "" {
@@ -316,14 +385,14 @@ func TestSdkAuditProviderEmitAndGlobalAccessor(t *testing.T) {
 		ActorType:  "user",
 		Action:     "READ",
 		Outcome:    "success",
-		RecordID:   "api-record-1",
+		RecordID:   testAuditRecordID(14),
 		Body:       log.StringValue(`{"ok":true}`),
 	}
 	receipt, err := got.Logger("api").Emit(context.Background(), rec)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if receipt.RecordID != "api-record-1" {
+	if receipt.RecordID != testAuditRecordID(14) {
 		t.Fatalf("api receipt record id: got %q", receipt.RecordID)
 	}
 	if receipt.IntegrityHash == "" {
@@ -343,9 +412,6 @@ func TestProviderEnrichIntegritySetsSpecFields(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if enriched.HMAC == "" {
-		t.Fatal("expected audit.hmac after enrich")
-	}
 	if enriched.IntegrityValue == "" {
 		t.Fatal("expected audit.integrity.value after enrich")
 	}
@@ -356,9 +422,9 @@ func TestProviderEnrichIntegritySetsSpecFields(t *testing.T) {
 
 func TestExportOKReturnsReceiptPerRecord(t *testing.T) {
 	rec := minimalAuditRecordNoTarget()
-	rec.RecordID = "receipt-a"
+	rec.RecordID = testAuditRecordID(15)
 	rec2 := minimalAuditRecordNoTarget()
-	rec2.RecordID = "receipt-b"
+	rec2.RecordID = testAuditRecordID(16)
 	result := ExportOK([]Record{rec.Record, rec2.Record})
 	if len(result.Receipts) != 2 {
 		t.Fatalf("expected 2 receipts, got %d", len(result.Receipts))
@@ -376,12 +442,12 @@ func TestExportOKReturnsReceiptPerRecord(t *testing.T) {
 func TestIntegrityValueExcludesIntegrityAttrsFromJCS(t *testing.T) {
 	key := []byte("jcs-exclude-key")
 	rec := minimalAuditRecordNoTarget()
-	rec.RecordID = "jcs-exclude-1"
+	rec.RecordID = testAuditRecordID(17)
 	rec.AddAttributes(
 		log.String(auditAttrIntegrityValue, base64.StdEncoding.EncodeToString([]byte("fake"))),
 		log.String(auditAttrIntegrityAlgorithm, "HMAC-SHA256"),
 	)
-	signed, err := SignAuditRecordHMAC(rec, key, "sha256", true)
+	signed, err := SignAuditRecordHMAC(rec, key, "sha256")
 	if err != nil {
 		t.Fatal(err)
 	}

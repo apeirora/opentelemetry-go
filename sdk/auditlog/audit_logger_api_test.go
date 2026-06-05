@@ -97,10 +97,9 @@ func newValidAuditRecord(body string) AuditRecord {
 		EventName:     "user.login",
 		Actor:         log.StringValue("actor"),
 		ActorType:     "user",
-		Action:        "login",
+		Action:        "LOGIN",
 		Resource:      log.StringValue("resource"),
 		Outcome:       "success",
-		RecordID:      "record-1",
 		SchemaVersion: "1.0",
 	}
 }

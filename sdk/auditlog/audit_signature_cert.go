@@ -62,7 +62,7 @@ func NewAuditCertificateSignatureVerifier(certPEM []byte) (AuditSignatureVerifie
 	switch pub := cert.PublicKey.(type) {
 	case *rsa.PublicKey:
 		return func(record AuditRecord, payload []byte) error {
-			sigBytes, err := base64.StdEncoding.DecodeString(record.Signature)
+			sigBytes, err := base64.StdEncoding.DecodeString(record.IntegrityValue)
 			if err != nil {
 				return fmt.Errorf("auditlog: decode signature: %w", err)
 			}
@@ -74,7 +74,7 @@ func NewAuditCertificateSignatureVerifier(certPEM []byte) (AuditSignatureVerifie
 		}, nil
 	case *ecdsa.PublicKey:
 		return func(record AuditRecord, payload []byte) error {
-			sigBytes, err := base64.StdEncoding.DecodeString(record.Signature)
+			sigBytes, err := base64.StdEncoding.DecodeString(record.IntegrityValue)
 			if err != nil {
 				return fmt.Errorf("auditlog: decode signature: %w", err)
 			}

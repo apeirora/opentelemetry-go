@@ -37,10 +37,10 @@ func TestWithAuditHMACVerificationKeyFromEnvironment_Variable(t *testing.T) {
 		Action:        "read",
 		Resource:      log.StringValue("/r"),
 		Outcome:       "success",
-		RecordID:      "rid-env-1",
+		RecordID:      testAuditRecordID(2),
 		SchemaVersion: "1.0",
 	}
-	wantSigned, err := signAuditRecordHMAC(rec, key, "sha256", true)
+	wantSigned, err := signAuditRecordHMAC(rec, key, "sha256")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -51,8 +51,8 @@ func TestWithAuditHMACVerificationKeyFromEnvironment_Variable(t *testing.T) {
 	if res.Hash != "" {
 		t.Fatalf("expected empty hash in result, got %q", res.Hash)
 	}
-	if wantSigned.HMAC == "" {
-		t.Fatal("expected hmac on signed record")
+	if wantSigned.IntegrityValue == "" {
+		t.Fatal("expected audit.integrity.value on signed record")
 	}
 }
 
@@ -85,10 +85,10 @@ func TestWithAuditHMACVerificationKeyFromEnvironment_File(t *testing.T) {
 		Action:        "read",
 		Resource:      log.StringValue("/r"),
 		Outcome:       "success",
-		RecordID:      "rid-file-1",
+		RecordID:      testAuditRecordID(3),
 		SchemaVersion: "1.0",
 	}
-	wantSigned, err := signAuditRecordHMAC(rec, key, "sha256", true)
+	wantSigned, err := signAuditRecordHMAC(rec, key, "sha256")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -99,8 +99,8 @@ func TestWithAuditHMACVerificationKeyFromEnvironment_File(t *testing.T) {
 	if res.Hash != "" {
 		t.Fatalf("expected empty hash in result, got %q", res.Hash)
 	}
-	if wantSigned.HMAC == "" {
-		t.Fatal("expected hmac on signed record")
+	if wantSigned.IntegrityValue == "" {
+		t.Fatal("expected audit.integrity.value on signed record")
 	}
 }
 
@@ -152,10 +152,10 @@ func TestWithAuditHMACVerificationKeyFromEnvironment_UnsetNoOp(t *testing.T) {
 		Action:        "read",
 		Resource:      log.StringValue("/r"),
 		Outcome:       "success",
-		RecordID:      "rid-noop-1",
+		RecordID:      testAuditRecordID(4),
 		SchemaVersion: "1.0",
 	}
-	wantSigned, err := signAuditRecordHMAC(rec, explicit, "sha256", true)
+	wantSigned, err := signAuditRecordHMAC(rec, explicit, "sha256")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -166,7 +166,7 @@ func TestWithAuditHMACVerificationKeyFromEnvironment_UnsetNoOp(t *testing.T) {
 	if res.Hash != "" {
 		t.Fatalf("expected empty hash in result, got %q", res.Hash)
 	}
-	if wantSigned.HMAC == "" {
-		t.Fatal("expected hmac on signed record")
+	if wantSigned.IntegrityValue == "" {
+		t.Fatal("expected audit.integrity.value on signed record")
 	}
 }

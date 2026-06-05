@@ -32,7 +32,7 @@ func TestWithAuditRecordSigningHMACBody(t *testing.T) {
 		t.Fatalf("expected 202, got %d %s", res.StatusCode, res.Reason)
 	}
 	signRec := provider.applyDefaultSignContent(rec)
-	want, err := signAuditRecordHMAC(signRec, key, "sha256", true)
+	want, err := signAuditRecordHMAC(signRec, key, "sha256")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -54,8 +54,12 @@ func TestWithAuditRecordSigningHashAndHMACMeta(t *testing.T) {
 	if res.StatusCode != 202 {
 		t.Fatalf("expected 202, got %d %s", res.StatusCode, res.Reason)
 	}
-	if res.Hash == "" {
-		t.Fatal("expected hash in emit result")
+	enriched, err := provider.enrichIntegrity(context.Background(), rec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !hasMACIntegrity(enriched) {
+		t.Fatal("expected HMAC integrity when hash and HMAC signing are configured")
 	}
 }
 
@@ -72,7 +76,7 @@ func TestWithAuditRecordSigningAttrPayload(t *testing.T) {
 		t.Fatalf("expected 202, got %d %s", res.StatusCode, res.Reason)
 	}
 	rec.SignContent = string(AuditSignContentAttr)
-	signed, err := signAuditRecordHMAC(rec, key, "sha256", true)
+	signed, err := signAuditRecordHMAC(rec, key, "sha256")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -128,10 +132,10 @@ func sampleAuditRecord(t *testing.T) AuditRecord {
 		EventName:     "user.action",
 		Actor:         log.StringValue("actor"),
 		ActorType:     "user",
-		Action:        "read",
+		Action:        "READ",
 		Resource:      log.StringValue("/r"),
 		Outcome:       "success",
-		RecordID:      "rid-sign-1",
+		RecordID:      testAuditRecordID(5),
 		SchemaVersion: "1.0",
 	}
 }

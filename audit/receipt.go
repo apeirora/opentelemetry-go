@@ -7,7 +7,8 @@ import "time"
 
 // AuditReceipt is proof of delivery returned after the audit sink acknowledges a record.
 type AuditReceipt struct {
-	RecordID      string
-	IntegrityHash string
-	SinkTimestamp time.Time
+	RecordID           string
+	IntegrityHash      string
+	SinkTimestamp      time.Time
+	SinkTimestampNanos uint64
 }

@@ -21,9 +21,10 @@ func receiptsFromRecords(records []Record) []audit.AuditReceipt {
 		id := recordIDFromSDKRecord(rec)
 		hash, _ := integrityHashFromSDKRecord(rec)
 		out = append(out, audit.AuditReceipt{
-			RecordID:      id,
-			IntegrityHash: hash,
-			SinkTimestamp: now,
+			RecordID:           id,
+			IntegrityHash:      hash,
+			SinkTimestamp:      now,
+			SinkTimestampNanos: uint64(now.UnixNano()),
 		})
 	}
 	return out
@@ -83,12 +84,6 @@ func auditRecordFromSDKRecord(rec Record) (AuditRecord, error) {
 			ar.SourceType = val
 		case auditAttrSchemaVersion:
 			ar.SchemaVersion = val
-		case auditAttrHash:
-			ar.Hash = val
-		case auditAttrHMAC:
-			ar.HMAC = val
-		case auditAttrSignature:
-			ar.Signature = val
 		case auditAttrIntegrityValue:
 			ar.IntegrityValue = val
 		case auditAttrIntegrityAlgorithm:

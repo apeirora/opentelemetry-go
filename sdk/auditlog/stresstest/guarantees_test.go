@@ -184,7 +184,8 @@ func TestStressRejectedRecordsNeverReachSink(t *testing.T) {
 	for i := 0; i < 3; i++ {
 		rec := makeStressRecord(valid + i)
 		rejectedIDs = append(rejectedIDs, rec.RecordID)
-		rec.HMAC = "0000000000000000000000000000000000000000000000000000000000000000"
+		rec.IntegrityValue = "0000000000000000000000000000000000000000000000000000000000000000"
+		rec.IntegrityAlgorithm = "HMAC-SHA256"
 		res := h.logger.EmitWithResult(context.Background(), rec)
 		if res.StatusCode != 400 {
 			t.Fatalf("invalid emit %d: want 400 got %d %s", i, res.StatusCode, res.Reason)

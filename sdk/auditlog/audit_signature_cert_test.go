@@ -53,7 +53,7 @@ func TestCertificateSignerVerifierFromFiles(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	rec := AuditRecord{Signature: sig}
+	rec := AuditRecord{IntegrityValue: sig, IntegrityAlgorithm: "ES256"}
 	if err := verifier(rec, payload); err != nil {
 		t.Fatalf("expected signature verification to pass: %v", err)
 	}
@@ -111,7 +111,7 @@ func TestCertificateVerifierRejectsInvalidBase64Signature(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	err = verifier(AuditRecord{Signature: "***invalid***"}, []byte("payload"))
+	err = verifier(AuditRecord{IntegrityValue: "***invalid***", IntegrityAlgorithm: "ES256"}, []byte("payload"))
 	if err == nil {
 		t.Fatal("expected verifier to fail on non-base64 signature")
 	}
