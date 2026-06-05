@@ -53,7 +53,7 @@ const (
 	auditAttrRecordID      = "audit.record.id"
 	auditAttrIntegrityValue     = "audit.integrity.value"
 	auditAttrSchemaVersion = "audit.schema.version"
-	auditAttrKeyID         = "audit.key_id"
+	auditAttrKeyID         = "audit.integrity.certificate"
 	auditAttrSequenceNo    = "audit.sequence.number"
 	auditAttrPrevHash      = "audit.prev.hash"
 )
