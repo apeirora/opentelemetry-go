@@ -43,8 +43,8 @@ func TestNormalizeAuditSignContent(t *testing.T) {
 }
 
 func TestDefaultIntegritySets(t *testing.T) {
-	if got := defaultRequiredIntegrity(); !got.Has(AuditIntegrityHMAC) || !got.Has(AuditIntegritySignature) || got.Has(AuditIntegrityHash) {
-		t.Fatalf("unexpected defaultRequiredIntegrity value: %v", got)
+	if got := defaultRequiredIntegrity(); got.AnySet() {
+		t.Fatalf("expected defaultRequiredIntegrity to be zero (integrity optional), got %v", got)
 	}
 	if got := defaultExportIntegrity(); !got.Has(AuditIntegrityHMAC) || !got.Has(AuditIntegritySignature) || !got.Has(AuditIntegrityHash) {
 		t.Fatalf("unexpected defaultExportIntegrity value: %v", got)

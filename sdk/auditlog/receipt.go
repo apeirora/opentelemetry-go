@@ -95,12 +95,8 @@ func auditRecordFromSDKRecord(rec Record) (AuditRecord, error) {
 			ar.IntegrityAlgorithm = val
 		case auditAttrIntegrityCertificate:
 			ar.IntegrityCertificate = val
-		case auditAttrPrevHash:
+		case auditAttrPrevHash, "audit.prev_hash":
 			ar.PrevHash = val
-		case auditAttrPrevHashSpec:
-			if ar.PrevHash == "" {
-				ar.PrevHash = val
-			}
 		case auditAttrSequenceNo:
 			if kv.Value.Kind() == log.KindInt64 {
 				ar.SequenceNo = kv.Value.AsInt64()

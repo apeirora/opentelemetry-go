@@ -57,7 +57,7 @@ const (
 	auditAttrSchemaVersion = "audit.schema.version"
 	auditAttrKeyID         = "audit.key_id"
 	auditAttrSequenceNo    = "audit.sequence.number"
-	auditAttrPrevHash      = "audit.prev_hash"
+	auditAttrPrevHash      = "audit.prev.hash"
 )
 
 func auditTargetFields(record AuditRecord) (id, typ string) {
@@ -179,33 +179,26 @@ func (l *auditLogger) EmitWithResult(ctx context.Context, record AuditRecord) Au
 	if record.SourceIP != "" {
 		otelRecord.AddAttributes(log.String(auditAttrSourceID, record.SourceIP))
 	}
-	if l.provider.exportIntegrity.Has(AuditIntegritySignature) && record.Signature != "" {
-		otelRecord.AddAttributes(log.String(auditAttrSignature, record.Signature))
-	}
-	if l.provider.exportIntegrity.Has(AuditIntegrityHMAC) && record.HMAC != "" {
-		otelRecord.AddAttributes(log.String(auditAttrHMAC, record.HMAC))
-	}
-	if record.IntegrityValue != "" {
-		otelRecord.AddAttributes(log.String(auditAttrIntegrityValue, record.IntegrityValue))
-	}
-	if record.IntegrityAlgorithm != "" {
-		otelRecord.AddAttributes(log.String(auditAttrIntegrityAlgorithm, record.IntegrityAlgorithm))
-	}
-	if record.IntegrityCertificate != "" {
-		otelRecord.AddAttributes(log.String(auditAttrIntegrityCertificate, record.IntegrityCertificate))
-	}
-	if l.provider.exportIntegrity.Has(AuditIntegrityHash) && record.Hash != "" {
-		otelRecord.AddAttributes(log.String(auditAttrHash, record.Hash))
-	}
-	if record.KeyID != "" {
-		otelRecord.AddAttributes(log.String(auditAttrKeyID, record.KeyID))
+	if l.provider.exportIntegrity.AnySet() {
+		if record.IntegrityValue != "" {
+			otelRecord.AddAttributes(log.String(auditAttrIntegrityValue, record.IntegrityValue))
+		}
+		if record.IntegrityAlgorithm != "" {
+			otelRecord.AddAttributes(log.String(auditAttrIntegrityAlgorithm, record.IntegrityAlgorithm))
+		}
+		cert := record.IntegrityCertificate
+		if cert == "" {
+			cert = record.KeyID
+		}
+		if cert != "" {
+			otelRecord.AddAttributes(log.String(auditAttrIntegrityCertificate, cert))
+		}
 	}
 	if record.SequenceNo > 0 {
 		otelRecord.AddAttributes(log.Int64(auditAttrSequenceNo, record.SequenceNo))
 	}
 	if record.PrevHash != "" {
 		otelRecord.AddAttributes(log.String(auditAttrPrevHash, record.PrevHash))
-		otelRecord.AddAttributes(log.String(auditAttrPrevHashSpec, record.PrevHash))
 	}
 	if record.SourceType != "" {
 		otelRecord.AddAttributes(log.String(auditAttrSourceType, record.SourceType))
@@ -230,6 +223,16 @@ func (l *auditLogger) EmitWithResult(ctx context.Context, record AuditRecord) Au
 				result.StatusCode, result.Status, result.Reason = mapAuditError(mappedErr)
 				result.RetryAfter = time.Second
 				return result
+			}
+		}
+		for _, proc := range l.provider.processors {
+			if ap, ok := proc.(*AuditLogProcessor); ok {
+				if dropErr := ap.takeDroppedError(record.RecordID); dropErr != nil {
+					mappedErr := newAuditStatusError(AuditErrorUnavailable, "audit_record_dropped", true, dropErr)
+					result.StatusCode, result.Status, result.Reason = mapAuditError(mappedErr)
+					result.RetryAfter = time.Second
+					return result
+				}
 			}
 		}
 		for _, proc := range l.provider.processors {
@@ -503,12 +506,8 @@ func resolveAuditProviderIntegrity(cfg auditProviderConfig) (autoSign, required,
 	if !cfg.explicitRecordSigning {
 		autoSign = defaultLegacyAutoSignIntegrity(len(cfg.hmacVerificationKey) > 0)
 	}
-	if !required.AnySet() {
-		if cfg.explicitRecordSigning && autoSign.AnySet() {
-			required = autoSign
-		} else {
-			required = defaultRequiredIntegrity()
-		}
+	if !required.AnySet() && cfg.explicitRecordSigning && autoSign.AnySet() {
+		required = autoSign
 	}
 	if !export.AnySet() {
 		export = defaultExportIntegrity()

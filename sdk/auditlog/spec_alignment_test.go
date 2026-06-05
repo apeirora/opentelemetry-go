@@ -19,12 +19,19 @@ import (
 )
 
 type captureExporter struct {
-	mu      sync.Mutex
-	batches [][]Record
+	mu          sync.Mutex
+	batches     [][]Record
+	exportError error
 }
 
 func (e *captureExporter) Export(ctx context.Context, records []Record) (ExportResult, error) {
 	_ = ctx
+	e.mu.Lock()
+	exportErr := e.exportError
+	e.mu.Unlock()
+	if exportErr != nil {
+		return ExportResult{}, exportErr
+	}
 	e.mu.Lock()
 	copied := make([]Record, len(records))
 	for i := range records {
@@ -57,6 +64,110 @@ func TestBuilderDefaultWaitOnExportTrue(t *testing.T) {
 	if !builder.GetConfig().WaitOnExport {
 		t.Fatal("expected builder default WaitOnExport true for synchronous delivery")
 	}
+}
+
+func TestZeroConfigProviderAcceptsRecordWithoutIntegrity(t *testing.T) {
+	provider := NewAuditLoggerProvider()
+	rec := minimalAuditRecordNoTarget()
+	if err := validateRequiredAuditRecord(rec, provider); err != nil {
+		t.Fatalf("zero-config provider should not require integrity: %v", err)
+	}
+	result := provider.Logger("zero").EmitWithResult(context.Background(), rec)
+	if result.StatusCode >= 400 {
+		t.Fatalf("expected emit to succeed without integrity, got status %d reason %q", result.StatusCode, result.Reason)
+	}
+}
+
+func TestExportUsesSpecIntegrityAttributesOnly(t *testing.T) {
+	key := []byte("spec-export-key")
+	capture := &captureExporter{}
+	store := NewAuditLogInMemoryStore()
+	builder, err := NewAuditLogProcessorBuilder(capture, store)
+	if err != nil {
+		t.Fatal(err)
+	}
+	processor, err := builder.SetMaxExportBatchSize(1).Build()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = processor.Shutdown(context.Background()) })
+
+	provider := NewAuditLoggerProvider(
+		WithAuditRecordProcessor(processor),
+		WithAuditHMACVerificationKey(key),
+		WithAuditAutoSignIntegrity(AuditIntegrityHMAC),
+		WithAuditExportIntegrity(AuditIntegrityHMAC),
+	)
+	rec := minimalAuditRecordNoTarget()
+	rec.RecordID = "spec-export-id"
+	result := provider.Logger("spec").EmitWithResult(context.Background(), rec)
+	if result.StatusCode >= 400 {
+		t.Fatalf("emit failed: status %d reason %q", result.StatusCode, result.Reason)
+	}
+	batch := capture.lastBatch()
+	if len(batch) != 1 {
+		t.Fatalf("expected one exported batch, got %d", len(batch))
+	}
+	attrs := attrKeysFromRecord(batch[0])
+	for _, legacy := range []string{"audit.hmac", "audit.signature", "audit.hash", "audit.key_id", "audit.prev_hash"} {
+		if attrs[legacy] {
+			t.Fatalf("legacy attribute %q must not be exported", legacy)
+		}
+	}
+	for _, spec := range []string{"audit.integrity.value", "audit.integrity.algorithm"} {
+		if !attrs[spec] {
+			t.Fatalf("expected spec attribute %q on exported record", spec)
+		}
+	}
+}
+
+func TestSyncEmitFailsWhenRetryBudgetExhausted(t *testing.T) {
+	key := []byte("drop-sync-key")
+	failExporter := &captureExporter{}
+	store := NewAuditLogInMemoryStore()
+	builder, err := NewAuditLogProcessorBuilder(failExporter, store)
+	if err != nil {
+		t.Fatal(err)
+	}
+	processor, err := builder.
+		SetMaxExportBatchSize(1).
+		SetRetryPolicy(RetryPolicy{
+			InitialBackoff:    time.Millisecond,
+			MaxBackoff:        time.Millisecond,
+			BackoffMultiplier: 1,
+			MaxAttempts:       1,
+		}).
+		Build()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = processor.Shutdown(context.Background()) })
+
+	provider := NewAuditLoggerProvider(
+		WithAuditRecordProcessor(processor),
+		WithAuditHMACVerificationKey(key),
+		WithAuditAutoSignIntegrity(AuditIntegrityHMAC),
+	)
+	rec := minimalAuditRecordNoTarget()
+	rec.RecordID = "drop-sync-id"
+
+	failExporter.mu.Lock()
+	failExporter.exportError = context.DeadlineExceeded
+	failExporter.mu.Unlock()
+
+	result := provider.Logger("drop").EmitWithResult(context.Background(), rec)
+	if result.StatusCode < 400 {
+		t.Fatalf("expected failure when export retries exhausted, got status %d", result.StatusCode)
+	}
+}
+
+func attrKeysFromRecord(rec Record) map[string]bool {
+	out := make(map[string]bool)
+	rec.WalkAttributes(func(kv log.KeyValue) bool {
+		out[string(kv.Key)] = true
+		return true
+	})
+	return out
 }
 
 func TestValidateAuditRecordTargetOptional(t *testing.T) {

@@ -61,7 +61,7 @@ func (p *AuditLoggerProvider) enrichIntegrity(ctx context.Context, record AuditR
 func (p *AuditLoggerProvider) satisfiesRequiredIntegrity(record AuditRecord) bool {
 	req := p.requiredIntegrity
 	if !req.AnySet() {
-		return record.Signature != "" || record.HMAC != "" || record.IntegrityValue != ""
+		return true
 	}
 	if req.Has(AuditIntegrityHMAC) && (record.HMAC != "" || record.IntegrityValue != "") {
 		return true

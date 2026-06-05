@@ -41,7 +41,7 @@ func normalizeAuditSignContent(mode string) AuditSignContent {
 }
 
 func defaultRequiredIntegrity() AuditIntegrityFields {
-	return AuditIntegrityHMAC | AuditIntegritySignature
+	return 0
 }
 
 func defaultExportIntegrity() AuditIntegrityFields {

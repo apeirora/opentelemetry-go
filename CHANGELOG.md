@@ -105,6 +105,9 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 - In `go.opentelemetry.io/otel/sdk/auditlog`, signature verification uses the same `sign_content` payload bytes as signing (HMAC/hash already did).
 - In `go.opentelemetry.io/otel/sdk/auditlog`, processor shutdown no longer races with ad-hoc export goroutines started from `OnEmit`.
 - In `go.opentelemetry.io/otel/sdk/auditlog/storage`, replace in-memory BoltDB and SQL stubs with durable `go.etcd.io/bbolt` and `database/sql` implementations (SQLite via `modernc.org/sqlite`, plus postgres/mysql drivers when registered by the application).
+- In `go.opentelemetry.io/otel/sdk/auditlog`, make integrity proofs optional by default (zero-config providers no longer reject records without HMAC or signature).
+- In `go.opentelemetry.io/otel/sdk/auditlog`, export only spec-aligned integrity attributes (`audit.integrity.value`, `audit.integrity.algorithm`, `audit.integrity.certificate`, `audit.prev.hash`) instead of legacy `audit.hmac`, `audit.signature`, `audit.hash`, `audit.key_id`, and `audit.prev_hash`.
+- In `go.opentelemetry.io/otel/sdk/auditlog`, surface hard errors to synchronous emit callers when export retry budget is exhausted and records are dropped.
 
 <!-- Released section -->
 <!-- Don't change this section unless doing release -->

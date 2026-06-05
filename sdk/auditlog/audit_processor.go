@@ -122,6 +122,9 @@ type AuditLogProcessor struct {
 
 	flushReceiptsMu sync.Mutex
 	flushReceipts   map[string]auditReceiptEntry
+
+	droppedRecordsMu sync.Mutex
+	droppedRecords   map[string]error
 }
 
 type auditReceiptEntry struct {
@@ -143,6 +146,35 @@ func (p *AuditLogProcessor) storeFlushReceipts(receipts []audit.AuditReceipt) {
 		}
 		p.flushReceipts[r.RecordID] = auditReceiptEntry{receipt: r}
 	}
+}
+
+func (p *AuditLogProcessor) markRecordsDropped(records []Record, cause error) {
+	p.droppedRecordsMu.Lock()
+	defer p.droppedRecordsMu.Unlock()
+	if p.droppedRecords == nil {
+		p.droppedRecords = make(map[string]error)
+	}
+	dropErr := fmt.Errorf("audit record dropped after retry exhaustion: %w", cause)
+	for _, rec := range records {
+		id := recordIDFromSDKRecord(rec)
+		if id != "" {
+			p.droppedRecords[id] = dropErr
+		}
+	}
+}
+
+func (p *AuditLogProcessor) takeDroppedError(recordID string) error {
+	p.droppedRecordsMu.Lock()
+	defer p.droppedRecordsMu.Unlock()
+	if p.droppedRecords == nil {
+		return nil
+	}
+	err, ok := p.droppedRecords[recordID]
+	if !ok {
+		return nil
+	}
+	delete(p.droppedRecords, recordID)
+	return err
 }
 
 func (p *AuditLogProcessor) ReceiptFor(recordID string) (audit.AuditReceipt, bool) {
@@ -504,7 +536,10 @@ func (p *AuditLogProcessor) exportLogs(ignoreRetryDelay bool) error {
 	exportResult, err := p.config.Exporter.Export(ctx, recordsToExport)
 	auditMetricsInstance().recordExportDuration(ctx, time.Since(exportStart))
 	if err != nil {
-		p.handleExportFailure(recordsToExport, err)
+		if p.handleExportFailure(recordsToExport, err) {
+			maxAttempts := p.config.RetryPolicy.MaxAttempts
+			return fmt.Errorf("audit records dropped after %d retry attempts: %w", maxAttempts, err)
+		}
 		return err
 	}
 	auditMetricsInstance().recordExported(ctx, int64(len(recordsToExport)))
@@ -571,7 +606,7 @@ func (p *AuditLogProcessor) calculateRetryDelay(attemptNumber int) int64 {
 	return int64(delay)
 }
 
-func (p *AuditLogProcessor) handleExportFailure(records []Record, cause error) {
+func (p *AuditLogProcessor) handleExportFailure(records []Record, cause error) bool {
 	if p.config.StorageWriteMode == AuditStorageWriteOnError {
 		storeCtx := context.Background()
 		for _, record := range records {
@@ -593,13 +628,14 @@ func (p *AuditLogProcessor) handleExportFailure(records []Record, cause error) {
 	maxAttempts := p.config.RetryPolicy.MaxAttempts
 	if maxAttempts > 0 && int(nextAttempt) > maxAttempts {
 		auditMetricsInstance().recordDropped(context.Background(), int64(len(records)))
+		p.markRecordsDropped(records, cause)
 		p.config.ExceptionHandler.Handle(&AuditException{
 			Message:    fmt.Sprintf("Failed to export audit log records after %d retry attempts", maxAttempts),
 			Cause:      cause,
 			Context:    context.Background(),
 			LogRecords: records,
 		})
-		return
+		return true
 	}
 
 	p.config.ExceptionHandler.Handle(&AuditException{
@@ -617,6 +653,7 @@ func (p *AuditLogProcessor) handleExportFailure(records []Record, cause error) {
 	p.queue = append(p.queue, cloned...)
 	p.queueMutex.Unlock()
 	auditMetricsInstance().adjustQueueDepth(context.Background(), int64(len(cloned)))
+	return false
 }
 
 func (p *AuditLogProcessor) ForceFlush(ctx context.Context) error {

@@ -20,7 +20,6 @@ const (
 	auditAttrIntegrityValue       = "audit.integrity.value"
 	auditAttrIntegrityAlgorithm   = "audit.integrity.algorithm"
 	auditAttrIntegrityCertificate = "audit.integrity.certificate"
-	auditAttrPrevHashSpec         = "audit.prev.hash"
 	auditAttrSourceType           = "audit.source.type"
 )
 
