@@ -108,6 +108,9 @@ func (l *auditLogger) EmitWithResult(ctx context.Context, record AuditRecord) Au
 	if record.RecordID == "" {
 		record.RecordID = uuid.NewString()
 	}
+	if record.RecordID == "" {
+  	  record.RecordID = uuid.NewString()
+	}
 	result := AuditEmitResult{
 		RecordID: record.RecordID,
 		Hash:     record.Hash,
