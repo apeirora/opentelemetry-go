@@ -65,8 +65,6 @@ type harnessOpts struct {
 	receiverCfg      mockreceiver.Config
 	maxBatchSize     int
 	retryPolicy      auditlog.RetryPolicy
-	deliveryMode     auditlog.AuditDeliveryMode
-	storageWriteMode auditlog.AuditStorageWriteMode
 	waitOnExport     bool
 	fileStoreDir     string
 	scheduleDelay    time.Duration
@@ -197,14 +195,6 @@ func newStressHarness(t *testing.T, opts harnessOpts) *stressHarness {
 	if exporterTimeout <= 0 {
 		exporterTimeout = 500 * time.Millisecond
 	}
-	deliveryMode := opts.deliveryMode
-	if deliveryMode == "" {
-		deliveryMode = auditlog.AuditDeliveryModeAsyncStoreRetry
-	}
-	storageMode := opts.storageWriteMode
-	if storageMode == "" {
-		storageMode = auditlog.AuditStorageWriteAlways
-	}
 	retry := opts.retryPolicy
 	if retry.InitialBackoff == 0 && retry.MaxBackoff == 0 && retry.BackoffMultiplier == 0 {
 		retry = auditlog.RetryPolicy{
@@ -220,8 +210,6 @@ func newStressHarness(t *testing.T, opts harnessOpts) *stressHarness {
 	}
 	processor, err := builder.
 		SetExceptionHandler(exHandler).
-		SetDeliveryMode(deliveryMode).
-		SetStorageWriteMode(storageMode).
 		SetScheduleDelay(scheduleDelay).
 		SetMaxExportBatchSize(maxBatch).
 		SetExporterTimeout(exporterTimeout).
@@ -304,19 +292,9 @@ func newProcessorOnStore(
 	if err != nil {
 		t.Fatalf("processor builder: %v", err)
 	}
-	deliveryMode := opts.deliveryMode
-	if deliveryMode == "" {
-		deliveryMode = auditlog.AuditDeliveryModeAsyncStoreRetry
-	}
-	storageMode := opts.storageWriteMode
-	if storageMode == "" {
-		storageMode = auditlog.AuditStorageWriteAlways
-	}
 
 	processor, err := builder.
 		SetExceptionHandler(exHandler).
-		SetDeliveryMode(deliveryMode).
-		SetStorageWriteMode(storageMode).
 		SetScheduleDelay(scheduleDelay).
 		SetMaxExportBatchSize(maxBatch).
 		SetExporterTimeout(exporterTimeout).
@@ -341,7 +319,7 @@ func emitRecords(t *testing.T, logger auditlog.AuditLogger, total int) {
 	for i := 0; i < total; i++ {
 		rec := makeStressRecord(i)
 		res := logger.EmitWithResult(context.Background(), rec)
-		if res.StatusCode != 202 {
+		if res.StatusCode != 200 && res.StatusCode != 202 {
 			t.Fatalf("emit %d: status=%d %s reason=%q", i, res.StatusCode, res.Status, res.Reason)
 		}
 	}

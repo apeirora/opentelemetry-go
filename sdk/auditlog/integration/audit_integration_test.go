@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net"
 	"sort"
 	"strings"
 	"sync"
@@ -28,7 +29,7 @@ type testGatedExporter struct {
 
 func (e *testGatedExporter) Export(ctx context.Context, records []auditlog.Record) (auditlog.ExportResult, error) {
 	if !e.allowSuccess.Load() {
-		return auditlog.ExportResult{}, fmt.Errorf("export blocked")
+		return auditlog.ExportResult{}, &net.OpError{Op: "dial", Err: errors.New("connection refused")}
 	}
 	e.mu.Lock()
 	defer e.mu.Unlock()
@@ -92,7 +93,6 @@ func TestAuditIntegrationProviderAsyncFileRecovery(t *testing.T) {
 			MaxBackoff:        5 * time.Millisecond,
 			BackoffMultiplier: 1.2,
 		},
-		DeliveryMode:   auditlog.AuditDeliveryModeAsyncStoreRetry,
 		WaitOnExport:   false,
 	})
 	if err != nil {
@@ -117,7 +117,7 @@ func TestAuditIntegrationProviderAsyncFileRecovery(t *testing.T) {
 
 	time.Sleep(40 * time.Millisecond)
 	if err := firstProcessor.Shutdown(context.Background()); err == nil {
-		t.Fatalf("expected shutdown error while exporter is blocked")
+		t.Fatalf("expected shutdown error while collector is unreachable")
 	}
 
 	persistedAfterFailure, err := firstStore.GetAll(context.Background())
@@ -146,7 +146,6 @@ func TestAuditIntegrationProviderAsyncFileRecovery(t *testing.T) {
 			MaxBackoff:        5 * time.Millisecond,
 			BackoffMultiplier: 1.2,
 		},
-		DeliveryMode: auditlog.AuditDeliveryModeAsyncStoreRetry,
 	})
 	if err != nil {
 		t.Fatalf("failed to create second processor: %v", err)
@@ -180,10 +179,10 @@ func TestAuditIntegrationIntegrityAndDeliverySemantics(t *testing.T) {
 
 	processor, err := auditlog.NewAuditLogProcessor(auditlog.AuditLogProcessorConfig{
 		Exporter:         exporter,
+		AuditLogStore:    auditlog.NewAuditLogInMemoryStore(),
 		ExceptionHandler: &auditlog.DefaultAuditExceptionHandler{},
 		ExporterTimeout:  time.Second,
 		WaitOnExport:     true,
-		DeliveryMode:     auditlog.AuditDeliveryModeSyncDirect,
 	})
 	if err != nil {
 		t.Fatalf("failed to create processor: %v", err)
@@ -239,7 +238,6 @@ func TestAuditIntegrationWaitOnExportClearsFileStore(t *testing.T) {
 			BackoffMultiplier: 1.2,
 		},
 		WaitOnExport: true,
-		DeliveryMode: auditlog.AuditDeliveryModeAsyncStoreRetry,
 	})
 	if err != nil {
 		t.Fatalf("processor: %v", err)
@@ -291,7 +289,6 @@ func TestAuditIntegrationWaitOnExportClearsFileStoreAutoSignDuplicateRecordIDAtt
 			BackoffMultiplier: 1.2,
 		},
 		WaitOnExport: true,
-		DeliveryMode: auditlog.AuditDeliveryModeAsyncStoreRetry,
 	})
 	if err != nil {
 		t.Fatalf("processor: %v", err)
@@ -328,10 +325,10 @@ func TestAuditIntegrationSignatureVerifierSemantics(t *testing.T) {
 
 	processor, err := auditlog.NewAuditLogProcessor(auditlog.AuditLogProcessorConfig{
 		Exporter:         exporter,
+		AuditLogStore:    auditlog.NewAuditLogInMemoryStore(),
 		ExceptionHandler: &auditlog.DefaultAuditExceptionHandler{},
 		ExporterTimeout:  time.Second,
 		WaitOnExport:     true,
-		DeliveryMode:     auditlog.AuditDeliveryModeSyncDirect,
 	})
 	if err != nil {
 		t.Fatalf("failed to create processor: %v", err)
@@ -381,10 +378,10 @@ func TestAuditIntegrationProviderRateLimitWithProcessor(t *testing.T) {
 
 	processor, err := auditlog.NewAuditLogProcessor(auditlog.AuditLogProcessorConfig{
 		Exporter:         exporter,
+		AuditLogStore:    auditlog.NewAuditLogInMemoryStore(),
 		ExceptionHandler: &auditlog.DefaultAuditExceptionHandler{},
 		ExporterTimeout:  time.Second,
 		WaitOnExport:     true,
-		DeliveryMode:     auditlog.AuditDeliveryModeSyncDirect,
 	})
 	if err != nil {
 		t.Fatalf("failed to create processor: %v", err)
@@ -424,10 +421,10 @@ func TestAuditIntegrationSyncDirectQueuedWhenNotWaiting(t *testing.T) {
 
 	processor, err := auditlog.NewAuditLogProcessor(auditlog.AuditLogProcessorConfig{
 		Exporter:         exporter,
+		AuditLogStore:    auditlog.NewAuditLogInMemoryStore(),
 		ExceptionHandler: &auditlog.DefaultAuditExceptionHandler{},
 		ExporterTimeout:  time.Second,
 		WaitOnExport:     false,
-		DeliveryMode:     auditlog.AuditDeliveryModeSyncDirect,
 	})
 	if err != nil {
 		t.Fatalf("failed to create processor: %v", err)

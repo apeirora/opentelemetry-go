@@ -8,11 +8,15 @@
 //
 //	go run ./testapp
 //
-// Send to an OpenTelemetry Collector OTLP HTTP receiver (audit logs path `/auditlogs`) instead of stdout JSON:
+// Send to an OpenTelemetry Collector OTLP HTTP receiver (audit logs path `/v1/audit`) instead of stdout JSON:
 //
 //	go run ./testapp -otlp-endpoint http://localhost:4318
 //
-// An explicit path overrides the default (for example `http://localhost:4318/auditlogs`).
+// HTTPS with mTLS (bundled dev_otlp_*.crt/key match auditlogreceiver testdata/tls):
+//
+//	go run ./testapp -otlp-endpoint https://localhost:4310/v1/audit
+//
+// An explicit path overrides the default (for example `http://localhost:4318/v1/audit`).
 //
 // For durability when export fails or the process restarts, add a file-backed store:
 //
@@ -31,8 +35,8 @@
 // Integrity uses HMAC (dev_hmac_key.txt), SHA-256 hash, and certificate signature (dev_sign_cert.pem / dev_sign_key.pem).
 // Override signing PEMs with -sign-cert-file and -sign-key-file. Regenerate dev certs: go run ./testapp/examples/certgen
 //
-// Delivery is synchronous (direct export on emit, WaitOnExport). For async store-and-retry
-// with -filestore durability, change SetDeliveryMode to AuditDeliveryModeAsyncStoreRetry in main.
+// Delivery is synchronous when the collector is reachable. When the collector is
+// offline, records are persisted to the store and retried asynchronously.
 //
 // Each emitted audit record gets a unique audit.record.id (UUID) so new runs do not collide
 // with rows still in a file-backed store from a previous run.
@@ -56,6 +60,8 @@ package main
 
 import (
 	"context"
+	"crypto/tls"
+	"crypto/x509"
 	"encoding/json"
 	"flag"
 	"fmt"
@@ -87,6 +93,9 @@ func main() {
 	hmacKeyFile := flag.String("hmac-key-file", "", "path to HMAC key file; when OTEL_AUDITLOG_HMAC_KEY* are unset, overrides auto-discovery of testapp/dev_hmac_key.txt")
 	signCertFile := flag.String("sign-cert-file", "", "path to PEM certificate for audit.signature; default testapp/dev_sign_cert.pem")
 	signKeyFile := flag.String("sign-key-file", "", "path to PEM private key for signing; default testapp/dev_sign_key.pem")
+	tlsCAFile := flag.String("tls-ca-file", "", "path to PEM CA for OTLP HTTPS server trust; default testapp/dev_otlp_ca.crt when using https")
+	tlsCertFile := flag.String("tls-cert-file", "", "path to PEM client certificate for OTLP mTLS; default testapp/dev_otlp_client.crt when using https")
+	tlsKeyFile := flag.String("tls-key-file", "", "path to PEM client private key for OTLP mTLS; default testapp/dev_otlp_client.key when using https")
 	rejectEvery := flag.Int("reject-every", 0, "if > 0, every Nth emit (1-based) uses invalid integrity proofs so the provider rejects it (status 400)")
 	flag.Parse()
 
@@ -136,19 +145,9 @@ func main() {
 		fmt.Fprintf(os.Stderr, "testapp: %v\n", err)
 		os.Exit(2)
 	}
-	signatureSigner, err := auditlog.NewAuditCertificateSignatureSignerFromFiles(certPath, keyPath)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "testapp: signature signer: %v\n", err)
-		os.Exit(2)
-	}
-	signatureVerifier, err := auditlog.NewAuditCertificateSignatureVerifierFromFiles(certPath)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "testapp: signature verifier: %v\n", err)
-		os.Exit(2)
-	}
-	fmt.Fprintf(os.Stderr, "testapp: signature cert %s key %s\n", certPath, keyPath)
+	fmt.Fprintf(os.Stderr, "testapp: signing cert %s key %s (HMAC-only export to collector)\n", certPath, keyPath)
 
-	exporter, err := buildExporter(*otlpEndpoint)
+	exporter, err := buildExporter(*otlpEndpoint, *tlsCAFile, *tlsCertFile, *tlsKeyFile)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "exporter: %v\n", err)
 		os.Exit(1)
@@ -159,7 +158,7 @@ func main() {
 		}
 	}
 	var store auditlog.AuditLogStore
-	if *fileStoreDir != "" {
+	if strings.TrimSpace(*fileStoreDir) != "" {
 		store, err = auditlog.NewAuditLogFileStore(*fileStoreDir)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "file store: %v\n", err)
@@ -167,16 +166,13 @@ func main() {
 		}
 		pending, perr := store.GetAll(context.Background())
 		if perr == nil && len(pending) > 0 {
-			fmt.Fprintf(os.Stderr, "testapp: file store contains %d pending record(s) from a prior async run; sync_direct does not replay them (switch delivery mode to async_store_retry to drain)\n", len(pending))
+			fmt.Fprintf(os.Stderr, "testapp: file store contains %d pending record(s); processor will replay them on startup\n", len(pending))
 		}
 		if fi, serr := os.Stat(*fileStoreDir); serr == nil && !fi.IsDir() {
 			fmt.Fprintf(os.Stderr, "testapp: if this file still shows old lines after \"delivered\", close it in your editor (Windows locks) or use -filestore <directory> (data goes to <directory>\\audit.log)\n")
 		}
 	} else {
 		store = auditlog.NewAuditLogInMemoryStore()
-		if strings.TrimSpace(*otlpEndpoint) != "" {
-			fmt.Fprintf(os.Stderr, "testapp: sync_direct delivery; records are not persisted to a store. Use async_store_retry with -filestore for durability across failed exports and restarts.\n")
-		}
 	}
 
 	builder, err := auditlog.NewAuditLogProcessorBuilder(exporter, store)
@@ -185,7 +181,6 @@ func main() {
 		os.Exit(1)
 	}
 	processor, err := builder.
-		SetDeliveryMode(auditlog.AuditDeliveryModeSyncDirect).
 		SetWaitOnExport(true).
 		SetExporterTimeout(10 * time.Second).
 		Build()
@@ -194,14 +189,12 @@ func main() {
 		os.Exit(1)
 	}
 
-	integrityFields := auditlog.AuditIntegrityHMAC | auditlog.AuditIntegrityHash | auditlog.AuditIntegritySignature
+	integrityFields := auditlog.AuditIntegrityHMAC
 	provider := auditlog.NewAuditLoggerProvider(
 		auditlog.WithAuditRecordProcessor(processor),
 		auditlog.WithAuditHashAlgorithm("sha256"),
 		auditlog.WithAuditHMACVerificationKeyFromEnvironment(),
-		auditlog.WithAuditRecordSigning(integrityFields, auditlog.AuditSignContentBody),
-		auditlog.WithAuditSignatureSigner(signatureSigner),
-		auditlog.WithAuditSignatureVerifier(signatureVerifier),
+		auditlog.WithAuditRecordSigning(integrityFields, auditlog.AuditSignContentMeta),
 	)
 
 	logger := provider.Logger("testapp", auditlog.WithAuditLoggerVersion("0.0.1"))
@@ -315,7 +308,7 @@ func resolveDefaultDevHMACKeyPath() string {
 	return resolveDefaultDevFile("dev_hmac_key.txt")
 }
 
-func buildExporter(otlpURL string) (auditlog.Exporter, error) {
+func buildExporter(otlpURL, tlsCA, tlsCert, tlsKey string) (auditlog.Exporter, error) {
 	raw := strings.TrimSpace(otlpURL)
 	if raw == "" {
 		return newStdoutExporter(), nil
@@ -338,6 +331,11 @@ func buildExporter(otlpURL string) (auditlog.Exporter, error) {
 	case "http":
 		opts = append(opts, otlpexport.WithInsecure())
 	case "https":
+		tlsCfg, err := loadTLSClientConfig(tlsCA, tlsCert, tlsKey)
+		if err != nil {
+			return nil, err
+		}
+		opts = append(opts, otlpexport.WithTLSClientConfig(tlsCfg))
 	default:
 		return nil, fmt.Errorf("otlp-endpoint: unsupported scheme %q (use http or https)", u.Scheme)
 	}
@@ -345,6 +343,63 @@ func buildExporter(otlpURL string) (auditlog.Exporter, error) {
 		opts = append(opts, otlpexport.WithURLPath(p))
 	}
 	return otlpexport.NewHTTP(context.Background(), opts...)
+}
+
+func resolveTLSPaths(caFlag, certFlag, keyFlag string) (string, string, string, error) {
+	caPath := strings.TrimSpace(caFlag)
+	certPath := strings.TrimSpace(certFlag)
+	keyPath := strings.TrimSpace(keyFlag)
+	if caPath == "" {
+		caPath = resolveDefaultDevFile("dev_otlp_ca.crt")
+	}
+	if certPath == "" {
+		certPath = resolveDefaultDevFile("dev_otlp_client.crt")
+	}
+	if keyPath == "" {
+		keyPath = resolveDefaultDevFile("dev_otlp_client.key")
+	}
+	if caPath == "" || certPath == "" || keyPath == "" {
+		return "", "", "", fmt.Errorf("https otlp-endpoint requires TLS files; use -tls-ca-file, -tls-cert-file, -tls-key-file, or place dev_otlp_ca.crt, dev_otlp_client.crt, and dev_otlp_client.key in testapp/")
+	}
+	caAbs, err := filepath.Abs(caPath)
+	if err != nil {
+		return "", "", "", fmt.Errorf("tls ca path: %w", err)
+	}
+	certAbs, err := filepath.Abs(certPath)
+	if err != nil {
+		return "", "", "", fmt.Errorf("tls cert path: %w", err)
+	}
+	keyAbs, err := filepath.Abs(keyPath)
+	if err != nil {
+		return "", "", "", fmt.Errorf("tls key path: %w", err)
+	}
+	return caAbs, certAbs, keyAbs, nil
+}
+
+func loadTLSClientConfig(caFlag, certFlag, keyFlag string) (*tls.Config, error) {
+	caPath, certPath, keyPath, err := resolveTLSPaths(caFlag, certFlag, keyFlag)
+	if err != nil {
+		return nil, err
+	}
+	caPEM, err := os.ReadFile(caPath)
+	if err != nil {
+		return nil, fmt.Errorf("read tls ca %s: %w", caPath, err)
+	}
+	pool := x509.NewCertPool()
+	if !pool.AppendCertsFromPEM(caPEM) {
+		return nil, fmt.Errorf("parse tls ca %s", caPath)
+	}
+	clientCert, err := tls.LoadX509KeyPair(certPath, keyPath)
+	if err != nil {
+		return nil, fmt.Errorf("load tls client cert %s/%s: %w", certPath, keyPath, err)
+	}
+	fmt.Fprintf(os.Stderr, "testapp: OTLP TLS ca=%s cert=%s key=%s\n", caPath, certPath, keyPath)
+	return &tls.Config{
+		RootCAs:      pool,
+		Certificates: []tls.Certificate{clientCert},
+		ServerName:   "localhost",
+		MinVersion:   tls.VersionTLS12,
+	}, nil
 }
 
 type loggingExporter struct {
@@ -431,7 +486,9 @@ func malformedAuditRecord(rec auditlog.AuditRecord) auditlog.AuditRecord {
 
 func buildAuditRecord(eventName, action, sourceIP string, iter int) auditlog.AuditRecord {
 	now := time.Now().UTC()
-	recordID := "rec-" + uuid.NewString()
+	recordID := uuid.NewString()
+	action = strings.ToUpper(strings.TrimSpace(action))
+	outcome := "success"
 	base := newAuditBaseRecord()
 	base.SetTimestamp(now)
 	base.SetObservedTimestamp(now)
@@ -441,6 +498,13 @@ func buildAuditRecord(eventName, action, sourceIP string, iter int) auditlog.Aud
 	base.AddAttributes(
 		log.String("audit.record.id", recordID),
 		log.String("base", "testapp"),
+		log.String("audit.actor.id", "alice@example.com"),
+		log.String("audit.actor.type", "user"),
+		log.String("audit.action", action),
+		log.String("audit.target.id", "/api/widgets"),
+		log.String("audit.outcome", outcome),
+		log.String("audit.schema.version", "1.0"),
+		log.String("audit.source.id", sourceIP),
 	)
 
 	return auditlog.AuditRecord{
@@ -450,11 +514,10 @@ func buildAuditRecord(eventName, action, sourceIP string, iter int) auditlog.Aud
 		ActorType:     "user",
 		Action:        action,
 		Resource:      log.StringValue("/api/widgets"),
-		Outcome:       "success",
+		Outcome:       outcome,
 		SourceIP:      sourceIP,
 		RecordID:      recordID,
 		SchemaVersion: "1.0",
-		SignContent:   "body",
 	}
 }
 

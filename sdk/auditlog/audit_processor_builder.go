@@ -10,9 +10,11 @@ import (
 )
 
 type AuditLogProcessorBuilder struct {
-	config        AuditLogProcessorConfig
-	storageConfig *storageConfig
-	extension     StorageExtension
+	config                 AuditLogProcessorConfig
+	storageConfig          *storageConfig
+	extension              StorageExtension
+	verifyExporterOnStartup bool
+	startupVerifyTimeout    time.Duration
 }
 
 func NewAuditLogProcessorBuilder(exporter Exporter, store AuditLogStore) (*AuditLogProcessorBuilder, error) {
@@ -33,9 +35,9 @@ func NewAuditLogProcessorBuilder(exporter Exporter, store AuditLogStore) (*Audit
 			ExporterTimeout:    30 * time.Second,
 			RetryPolicy:        GetDefaultRetryPolicy(),
 			WaitOnExport:       true,
-			DeliveryMode:       AuditDeliveryModeAsyncStoreRetry,
-			StorageWriteMode:   AuditStorageWriteAlways,
 		},
+		verifyExporterOnStartup: true,
+		startupVerifyTimeout:    10 * time.Second,
 	}, nil
 }
 
@@ -53,9 +55,9 @@ func NewAuditLogProcessorWithStorage(exporter Exporter) (*AuditLogProcessorBuild
 			ExporterTimeout:    30 * time.Second,
 			RetryPolicy:        GetDefaultRetryPolicy(),
 			WaitOnExport:       true,
-			DeliveryMode:       AuditDeliveryModeAsyncStoreRetry,
-			StorageWriteMode:   AuditStorageWriteAlways,
 		},
+		verifyExporterOnStartup: true,
+		startupVerifyTimeout:    10 * time.Second,
 	}, nil
 }
 
@@ -91,13 +93,13 @@ func (b *AuditLogProcessorBuilder) SetWaitOnExport(wait bool) *AuditLogProcessor
 	return b
 }
 
-func (b *AuditLogProcessorBuilder) SetDeliveryMode(mode AuditDeliveryMode) *AuditLogProcessorBuilder {
-	b.config.DeliveryMode = mode
+func (b *AuditLogProcessorBuilder) SetVerifyExporterOnStartup(verify bool) *AuditLogProcessorBuilder {
+	b.verifyExporterOnStartup = verify
 	return b
 }
 
-func (b *AuditLogProcessorBuilder) SetStorageWriteMode(mode AuditStorageWriteMode) *AuditLogProcessorBuilder {
-	b.config.StorageWriteMode = mode
+func (b *AuditLogProcessorBuilder) SetStartupVerifyTimeout(timeout time.Duration) *AuditLogProcessorBuilder {
+	b.startupVerifyTimeout = timeout
 	return b
 }
 
@@ -108,7 +110,7 @@ func (b *AuditLogProcessorBuilder) Build() (*AuditLogProcessor, error) {
 
 	ctx := context.Background()
 
-	if b.config.DeliveryMode == AuditDeliveryModeAsyncStoreRetry && b.config.AuditLogStore == nil && b.storageConfig != nil {
+	if b.config.AuditLogStore == nil && b.storageConfig != nil {
 		extension, err := b.createStorageExtension()
 		if err != nil {
 			return nil, fmt.Errorf("failed to create storage extension: %w", err)
@@ -139,6 +141,27 @@ func (b *AuditLogProcessorBuilder) Build() (*AuditLogProcessor, error) {
 		b.extension = extension
 	}
 
+	if b.verifyExporterOnStartup {
+		if verifier, ok := b.config.Exporter.(StartupExporterVerifier); ok {
+			timeout := b.startupVerifyTimeout
+			if timeout <= 0 {
+				timeout = 10 * time.Second
+			}
+			if b.config.ExporterTimeout > 0 && b.config.ExporterTimeout < timeout {
+				timeout = b.config.ExporterTimeout
+			}
+			vctx, cancel := context.WithTimeout(ctx, timeout)
+			err := verifier.VerifyStartup(vctx)
+			cancel()
+			if err != nil {
+				if b.extension != nil {
+					b.extension.Shutdown(ctx)
+				}
+				return nil, fmt.Errorf("exporter startup verification failed: %w", err)
+			}
+		}
+	}
+
 	processor, err := NewAuditLogProcessor(b.config)
 	if err != nil {
 		if b.extension != nil {
@@ -160,10 +183,7 @@ func (b *AuditLogProcessorBuilder) ValidateConfig() error {
 	if b.config.Exporter == nil {
 		return fmt.Errorf("exporter is required")
 	}
-	if b.config.DeliveryMode != AuditDeliveryModeAsyncStoreRetry && b.config.DeliveryMode != AuditDeliveryModeSyncDirect {
-		return fmt.Errorf("delivery mode must be async_store_retry or sync_direct")
-	}
-	if b.config.DeliveryMode == AuditDeliveryModeAsyncStoreRetry && b.config.AuditLogStore == nil && b.storageConfig == nil {
+	if b.config.AuditLogStore == nil && b.storageConfig == nil {
 		return fmt.Errorf("audit log store is required")
 	}
 	if b.config.ExceptionHandler == nil {
@@ -189,9 +209,6 @@ func (b *AuditLogProcessorBuilder) ValidateConfig() error {
 	}
 	if b.config.RetryPolicy.MaxAttempts < 0 {
 		return fmt.Errorf("retry policy max attempts must be non-negative")
-	}
-	if b.config.StorageWriteMode != AuditStorageWriteAlways && b.config.StorageWriteMode != AuditStorageWriteOnError {
-		return fmt.Errorf("storage write mode must be always or on_error")
 	}
 	return nil
 }

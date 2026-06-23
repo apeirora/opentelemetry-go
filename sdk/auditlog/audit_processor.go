@@ -70,24 +70,7 @@ type AuditLogProcessorConfig struct {
 	ExporterTimeout    time.Duration
 	RetryPolicy        RetryPolicy
 	WaitOnExport       bool
-	DeliveryMode       AuditDeliveryMode
-	StorageWriteMode   AuditStorageWriteMode
 }
-
-type AuditDeliveryMode string
-type AuditStorageWriteMode string
-
-const (
-	AuditDeliveryModeAsyncStoreRetry AuditDeliveryMode = "async_store_retry"
-	AuditDeliveryModeSyncDirect      AuditDeliveryMode = "sync_direct"
-
-	// AuditStorageWriteAlways persists each record to the configured store before it enters
-	// the in-memory export queue, so crashes can recover from disk/Redis/SQL on restart.
-	AuditStorageWriteAlways AuditStorageWriteMode = "always"
-	// AuditStorageWriteOnError persists only after an export failure. Records accepted while
-	// the process is healthy live only in the in-memory queue until export succeeds or fails.
-	AuditStorageWriteOnError AuditStorageWriteMode = "on_error"
-)
 
 func DefaultAuditLogProcessorConfig(exporter Exporter, store AuditLogStore) AuditLogProcessorConfig {
 	return AuditLogProcessorConfig{
@@ -99,8 +82,6 @@ func DefaultAuditLogProcessorConfig(exporter Exporter, store AuditLogStore) Audi
 		ExporterTimeout:    30 * time.Second,
 		RetryPolicy:        GetDefaultRetryPolicy(),
 		WaitOnExport:       true,
-		DeliveryMode:       AuditDeliveryModeAsyncStoreRetry,
-		StorageWriteMode:   AuditStorageWriteAlways,
 	}
 }
 
@@ -203,36 +184,58 @@ func nonCancelContext(ctx context.Context) context.Context {
 	return context.WithoutCancel(ctx)
 }
 
+func normalizeAuditLogProcessorConfig(config AuditLogProcessorConfig) AuditLogProcessorConfig {
+	defaults := DefaultAuditLogProcessorConfig(config.Exporter, config.AuditLogStore)
+	if config.ExceptionHandler == nil {
+		config.ExceptionHandler = defaults.ExceptionHandler
+	}
+	if config.ScheduleDelay == 0 {
+		config.ScheduleDelay = defaults.ScheduleDelay
+	}
+	if config.MaxExportBatchSize <= 0 {
+		config.MaxExportBatchSize = defaults.MaxExportBatchSize
+	}
+	if config.ExporterTimeout == 0 {
+		config.ExporterTimeout = defaults.ExporterTimeout
+	}
+	if config.RetryPolicy.InitialBackoff == 0 &&
+		config.RetryPolicy.MaxBackoff == 0 &&
+		config.RetryPolicy.BackoffMultiplier == 0 {
+		config.RetryPolicy = defaults.RetryPolicy
+	} else {
+		if config.RetryPolicy.InitialBackoff == 0 {
+			config.RetryPolicy.InitialBackoff = defaults.RetryPolicy.InitialBackoff
+		}
+		if config.RetryPolicy.MaxBackoff == 0 {
+			config.RetryPolicy.MaxBackoff = defaults.RetryPolicy.MaxBackoff
+		}
+		if config.RetryPolicy.BackoffMultiplier == 0 {
+			config.RetryPolicy.BackoffMultiplier = defaults.RetryPolicy.BackoffMultiplier
+		}
+	}
+	return config
+}
+
 func NewAuditLogProcessor(config AuditLogProcessorConfig) (*AuditLogProcessor, error) {
 	if config.Exporter == nil {
 		return nil, fmt.Errorf("exporter cannot be nil")
 	}
-	if config.ExceptionHandler == nil {
-		config.ExceptionHandler = &DefaultAuditExceptionHandler{}
-	}
-	if config.DeliveryMode == "" {
-		config.DeliveryMode = AuditDeliveryModeAsyncStoreRetry
-	}
-	if config.StorageWriteMode == "" {
-		config.StorageWriteMode = AuditStorageWriteAlways
-	}
-	if config.DeliveryMode == AuditDeliveryModeAsyncStoreRetry && config.AuditLogStore == nil {
+	if config.AuditLogStore == nil {
 		return nil, fmt.Errorf("audit log store cannot be nil")
 	}
+	config = normalizeAuditLogProcessorConfig(config)
 
 	processor := &AuditLogProcessor{
 		config:   config,
 		stopChan: make(chan struct{}),
 	}
 
-	if config.DeliveryMode == AuditDeliveryModeAsyncStoreRetry {
-		processor.startBackgroundProcessing()
-		if err := processor.loadExistingRecords(); err != nil {
-			processor.shutdown.Store(true)
-			close(processor.stopChan)
-			processor.wg.Wait()
-			return nil, fmt.Errorf("failed to load existing records: %w", err)
-		}
+	processor.startBackgroundProcessing()
+	if err := processor.loadExistingRecords(); err != nil {
+		processor.shutdown.Store(true)
+		close(processor.stopChan)
+		processor.wg.Wait()
+		return nil, fmt.Errorf("failed to load existing records: %w", err)
 	}
 
 	return processor, nil
@@ -402,12 +405,17 @@ func (p *AuditLogProcessor) startBackgroundProcessing() {
 	p.wg.Add(1)
 	go func() {
 		defer p.wg.Done()
-		ticker := time.NewTicker(p.config.ScheduleDelay)
-		defer ticker.Stop()
+		var ticker *time.Ticker
+		var tickerC <-chan time.Time
+		if p.config.ScheduleDelay > 0 {
+			ticker = time.NewTicker(p.config.ScheduleDelay)
+			defer ticker.Stop()
+			tickerC = ticker.C
+		}
 
 		for {
 			select {
-			case <-ticker.C:
+			case <-tickerC:
 				p.invokeExport("Background audit export failed")
 			case <-p.wakeExport:
 				p.invokeExport("Audit export failed")
@@ -433,54 +441,48 @@ func (p *AuditLogProcessor) OnEmit(ctx context.Context, record *Record) error {
 		return exception
 	}
 
-	if p.config.DeliveryMode == AuditDeliveryModeSyncDirect {
-		exportCtx := nonCancelContext(ctx)
-		if p.config.ExporterTimeout > 0 {
-			var cancel context.CancelFunc
-			exportCtx, cancel = context.WithTimeout(exportCtx, p.config.ExporterTimeout)
-			defer cancel()
-		}
-		exportStart := time.Now()
-		exportResult, err := p.config.Exporter.Export(exportCtx, []Record{*record})
-		auditMetricsInstance().recordExportDuration(exportCtx, time.Since(exportStart))
-		if err != nil {
-			exception := &AuditException{
-				Message:    "Failed to export record directly",
-				Cause:      err,
-				Context:    ctx,
-				LogRecords: []Record{*record},
-			}
-			p.config.ExceptionHandler.Handle(exception)
-			return exception
-		}
+	exportCtx := nonCancelContext(ctx)
+	if p.config.ExporterTimeout > 0 {
+		var cancel context.CancelFunc
+		exportCtx, cancel = context.WithTimeout(exportCtx, p.config.ExporterTimeout)
+		defer cancel()
+	}
+	exportStart := time.Now()
+	exportResult, err := p.config.Exporter.Export(exportCtx, []Record{*record})
+	auditMetricsInstance().recordExportDuration(exportCtx, time.Since(exportStart))
+	if err == nil {
 		auditMetricsInstance().recordExported(exportCtx, 1)
 		p.storeFlushReceipts(exportResult.Receipts)
 		return nil
 	}
-
-	if p.config.StorageWriteMode == AuditStorageWriteAlways {
-		storeCtx := nonCancelContext(ctx)
-		if err := p.config.AuditLogStore.Save(storeCtx, record); err != nil {
-			exception := &AuditException{
-				Message:    "Failed to save record to audit store",
-				Cause:      err,
-				Context:    ctx,
-				LogRecords: []Record{*record},
-			}
-			p.config.ExceptionHandler.Handle(exception)
-			return exception
+	if !isExportConnectionFailure(err) {
+		exception := &AuditException{
+			Message:    "Collector returned an error; audit records are logged and not stored",
+			Cause:      err,
+			Context:    ctx,
+			LogRecords: []Record{*record},
 		}
+		p.config.ExceptionHandler.Handle(exception)
+		return exception
+	}
+
+	storeCtx := nonCancelContext(ctx)
+	if err := p.config.AuditLogStore.Save(storeCtx, record); err != nil {
+		exception := &AuditException{
+			Message:    "Failed to save record to audit store",
+			Cause:      err,
+			Context:    ctx,
+			LogRecords: []Record{*record},
+		}
+		p.config.ExceptionHandler.Handle(exception)
+		return exception
 	}
 
 	p.queueMutex.Lock()
 	p.queue = append(p.queue, record.Clone())
-	queueSize := len(p.queue)
 	p.queueMutex.Unlock()
 	auditMetricsInstance().adjustQueueDepth(ctx, 1)
-
-	if queueSize >= p.config.MaxExportBatchSize {
-		p.scheduleExport()
-	}
+	p.scheduleExport()
 
 	return nil
 }
@@ -532,7 +534,6 @@ func (p *AuditLogProcessor) exportLogs(ignoreRetryDelay bool) error {
 		defer cancel()
 	}
 
-	shouldRemove := p.shouldRemoveExportedRecordsFromStore()
 	exportResult, err := p.config.Exporter.Export(ctx, recordsToExport)
 	auditMetricsInstance().recordExportDuration(ctx, time.Since(exportStart))
 	if err != nil {
@@ -546,17 +547,7 @@ func (p *AuditLogProcessor) exportLogs(ignoreRetryDelay bool) error {
 	p.storeFlushReceipts(exportResult.Receipts)
 	p.currentRetryAttempt.Store(0)
 	p.lastRetryTimestamp.Store(0)
-	if !shouldRemove {
-		return nil
-	}
 	return p.removeExportedRecordsFromStore(ctx, recordsToExport)
-}
-
-func (p *AuditLogProcessor) shouldRemoveExportedRecordsFromStore() bool {
-	if p.config.StorageWriteMode == AuditStorageWriteAlways {
-		return true
-	}
-	return p.currentRetryAttempt.Load() > 0
 }
 
 func (p *AuditLogProcessor) removeExportedRecordsFromStore(ctx context.Context, records []Record) error {
@@ -607,19 +598,17 @@ func (p *AuditLogProcessor) calculateRetryDelay(attemptNumber int) int64 {
 }
 
 func (p *AuditLogProcessor) handleExportFailure(records []Record, cause error) bool {
-	if p.config.StorageWriteMode == AuditStorageWriteOnError {
-		storeCtx := context.Background()
-		for _, record := range records {
-			recordCopy := record
-			if err := p.config.AuditLogStore.Save(storeCtx, &recordCopy); err != nil {
-				p.config.ExceptionHandler.Handle(&AuditException{
-					Message:    "Failed to save failed export record to audit store",
-					Cause:      err,
-					Context:    storeCtx,
-					LogRecords: []Record{recordCopy},
-				})
-			}
-		}
+	if !isExportConnectionFailure(cause) {
+		_ = p.config.AuditLogStore.RemoveAll(context.Background(), records)
+		auditMetricsInstance().recordDropped(context.Background(), int64(len(records)))
+		p.markRecordsDropped(records, cause)
+		p.config.ExceptionHandler.Handle(&AuditException{
+			Message:    "Collector returned an error; audit records are logged and not stored",
+			Cause:      cause,
+			Context:    context.Background(),
+			LogRecords: records,
+		})
+		return true
 	}
 
 	nextAttempt := p.currentRetryAttempt.Add(1)
@@ -657,10 +646,6 @@ func (p *AuditLogProcessor) handleExportFailure(records []Record, cause error) b
 }
 
 func (p *AuditLogProcessor) ForceFlush(ctx context.Context) error {
-	if p.config.DeliveryMode == AuditDeliveryModeSyncDirect {
-		return nil
-	}
-
 	flushWait := time.NewTimer(10 * time.Millisecond)
 	defer flushWait.Stop()
 

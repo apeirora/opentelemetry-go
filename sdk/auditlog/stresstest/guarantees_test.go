@@ -269,7 +269,7 @@ func TestStressFIFOOrderAtSink(t *testing.T) {
 	}
 }
 
-func TestStressSyncDirectDoesNotReplayFileStore(t *testing.T) {
+func TestStressProcessorReplaysFileStoreOnRestart(t *testing.T) {
 	n := 5
 	storeDir := t.TempDir()
 
@@ -309,26 +309,11 @@ func TestStressSyncDirectDoesNotReplayFileStore(t *testing.T) {
 	recv.SetAccepting(true)
 	recv.ResetStats()
 
-	syncOpts := defaultAsyncOpts()
-	syncOpts.deliveryMode = auditlog.AuditDeliveryModeSyncDirect
-	storeSync, err := auditlog.NewAuditLogFileStore(storeDir)
+	storeReplay, err := auditlog.NewAuditLogFileStore(storeDir)
 	if err != nil {
 		t.Fatal(err)
 	}
-	pSync, provSync, _, _ := newProcessorOnStore(t, recv, storeSync, syncOpts)
-	time.Sleep(200 * time.Millisecond)
-	_ = pSync.Shutdown(context.Background())
-	_ = provSync.Shutdown(context.Background())
-
-	if got := recv.UniqueRecordCount(); got != 0 {
-		t.Fatalf("sync_direct must not replay file store backlog: sink got %d", got)
-	}
-
-	storeAsync, err := auditlog.NewAuditLogFileStore(storeDir)
-	if err != nil {
-		t.Fatal(err)
-	}
-	p2, prov2, _, _ := newProcessorOnStore(t, recv, storeAsync, asyncOpts)
+	p2, prov2, _, _ := newProcessorOnStore(t, recv, storeReplay, asyncOpts)
 	defer func() {
 		_ = p2.Shutdown(context.Background())
 		_ = prov2.Shutdown(context.Background())
@@ -336,7 +321,7 @@ func TestStressSyncDirectDoesNotReplayFileStore(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
 	defer cancel()
-	if err := mockreceiver.WaitForDrain(ctx, recv, n, pendingStore(storeAsync)); err != nil {
+	if err := mockreceiver.WaitForDrain(ctx, recv, n, pendingStore(storeReplay)); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -364,12 +349,11 @@ func TestStressShutdownDrainsQueue(t *testing.T) {
 	}
 }
 
-func TestStressStorageWriteAlwaysPersistsBeforeExport(t *testing.T) {
+func TestStressConnectionFailurePersistsBeforeExport(t *testing.T) {
 	h := newStressHarness(t, harnessOpts{
 		receiverCfg:      mockreceiver.Config{URLPath: "/v1/audit", StartAccepting: false},
 		maxBatchSize:     512,
 		scheduleDelay:    time.Hour,
-		storageWriteMode: auditlog.AuditStorageWriteAlways,
 	})
 
 	rec := makeStressRecord(0)
@@ -378,34 +362,10 @@ func TestStressStorageWriteAlwaysPersistsBeforeExport(t *testing.T) {
 		t.Fatalf("emit: %d %s", res.StatusCode, res.Reason)
 	}
 	if got := h.pending(); got != 1 {
-		t.Fatalf("write always: want 1 in store before export, got %d", got)
+		t.Fatalf("connection failure: want 1 in store before retry, got %d", got)
 	}
 	if h.recv.UniqueRecordCount() != 0 {
 		t.Fatalf("export should not have succeeded yet, sink=%d", h.recv.UniqueRecordCount())
-	}
-}
-
-func TestStressStorageWriteOnErrorPersistsAfterFailure(t *testing.T) {
-	h := newStressHarness(t, harnessOpts{
-		receiverCfg:      mockreceiver.Config{URLPath: "/v1/audit", StartAccepting: false},
-		maxBatchSize:     1,
-		scheduleDelay:    5 * time.Millisecond,
-		storageWriteMode: auditlog.AuditStorageWriteOnError,
-	})
-
-	rec := makeStressRecord(0)
-	res := h.logger.EmitWithResult(context.Background(), rec)
-	if res.StatusCode != 202 {
-		t.Fatalf("emit: %d %s", res.StatusCode, res.Reason)
-	}
-	if got := h.pending(); got != 0 {
-		t.Fatalf("write on error: store should be empty before export fails, got %d", got)
-	}
-
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
-	if err := mockreceiver.WaitForStoreCount(ctx, h.pending, 1); err != nil {
-		t.Fatal(err)
 	}
 }
 

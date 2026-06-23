@@ -8,8 +8,13 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ## [Unreleased]
 
+### Added
+
+- In `go.opentelemetry.io/otel/sdk/auditlog/otlpexport`, verify OTLP HTTPS TLS configuration at processor startup via `StartupExporterVerifier`; misconfigured trust or client certificates fail `AuditLogProcessorBuilder.Build()` while an unreachable collector does not block startup.
+
 ### Changed
 
+- In `go.opentelemetry.io/otel/sdk/auditlog`, simplify `AuditLogProcessor` to a single delivery model: synchronous export when the collector is reachable, async store-and-retry only when the collector is unreachable. Remove `AuditDeliveryMode`, `AuditStorageWriteMode`, `SetDeliveryMode`, and `SetStorageWriteMode`.
 - In `go.opentelemetry.io/otel/sdk/auditlog`, align exported attribute keys with dotted audit naming (`audit.actor.id`, `audit.target.id`, `audit.record.id`, and related fields), remove `Enabled` from `AuditLogger` and `AuditRecordProcessor`, relax body/schema validation, auto-generate missing record IDs, and export queued records in FIFO order instead of severity priority.
 - In `go.opentelemetry.io/otel/sdk/auditlog`, align LogRecord export with the audit log spec: validate `audit.record.id` as UUID v4, normalize `action`/`actor.type`/`outcome` casing, omit severity on exported records, place `audit.integrity.algorithm` and `audit.integrity.certificate` on the resource (export only `audit.integrity.value` on the record), and add `SinkTimestampNanos` to `AuditReceipt`.
 
@@ -21,7 +26,7 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 - In `go.opentelemetry.io/otel/sdk/auditlog`, add `WithAuditRecordSigning` to configure per-provider integrity for every emitted record (HMAC, hash, and/or certificate signature) and the signed payload scope (`AuditSignContentMeta`, `AuditSignContentBody`, or `AuditSignContentAttr`). Add `WithAuditSignContent`, `WithAuditAutoSignIntegrity`, `WithAuditRequiredIntegrity`, `WithAuditExportIntegrity`, custom `WithAuditHMACSigner`, `WithAuditHashComputer`, `WithAuditSignatureSigner`, `WithAuditIntegrityEnricher`, hash verification, `audit.hash` export, and `NewAuditCertificateSignatureSigner` / `NewAuditCertificateSignatureSignerFromFiles` / `NewAuditCertificateSignatureVerifier` / `NewAuditCertificateSignatureVerifierFromFiles` for certificate-based signatures.
 - In `go.opentelemetry.io/otel/sdk/auditlog`, when `WithAuditHMACVerificationKey` is configured with a non-empty key and record signing is not configured explicitly, the provider auto-computes HMAC before validation (trusted in-process emitters no longer need to pre-sign).
 - Add `WithAuditHMACVerificationKeyFromEnvironment`, `EnvAuditlogHMACKeyFile`, and `EnvAuditlogHMACKey` in `go.opentelemetry.io/otel/sdk/auditlog` to load the HMAC verification key from `OTEL_AUDITLOG_HMAC_KEY_FILE` (path) or `OTEL_AUDITLOG_HMAC_KEY` (raw string).
-- In `go.opentelemetry.io/otel/sdk/auditlog`, add `AuditStorageWriteMode` with builder `SetStorageWriteMode` to choose between `AuditStorageWriteAlways` (default) and `AuditStorageWriteOnError` (persist only after failed export attempts).
+- In `go.opentelemetry.io/otel/sdk/auditlog`, add connection-failure detection for export errors so the processor can distinguish collector unreachability from HTTP rejections.
 - In `go.opentelemetry.io/otel/sdk/auditlog`, add `RetryPolicy.MaxAttempts` to cap export retry cycles (zero means unlimited).
 - In `go.opentelemetry.io/otel/sdk/auditlog`, `AuditLogProcessor` uses a single background export worker with coalesced wakeups instead of spawning unbounded export goroutines.
 - In `go.opentelemetry.io/otel/sdk/auditlog`, add `WithAuditResource` and `WithAuditIntegrityResource` provider options for resource-level audit metadata and integrity attributes.

@@ -5,7 +5,9 @@ package auditlog
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"net"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -298,7 +300,6 @@ func TestAuditLogProcessor(t *testing.T) {
 			ExporterTimeout:    time.Second,
 			RetryPolicy:        GetDefaultRetryPolicy(),
 			WaitOnExport:       false,
-			DeliveryMode:       AuditDeliveryModeAsyncStoreRetry,
 		}
 
 		processor, err := NewAuditLogProcessor(config)
@@ -355,7 +356,6 @@ func TestAuditLogProcessor(t *testing.T) {
 			ExporterTimeout:    time.Second,
 			RetryPolicy:        GetDefaultRetryPolicy(),
 			WaitOnExport:       false,
-			DeliveryMode:       AuditDeliveryModeAsyncStoreRetry,
 		}
 
 		processor, err := NewAuditLogProcessor(config)
@@ -422,7 +422,6 @@ func TestAuditLogProcessor(t *testing.T) {
 			ExporterTimeout:    time.Second,
 			RetryPolicy:        GetDefaultRetryPolicy(),
 			WaitOnExport:       false,
-			DeliveryMode:       AuditDeliveryModeAsyncStoreRetry,
 		}
 
 		processor, err := NewAuditLogProcessor(config)
@@ -459,12 +458,9 @@ func TestAuditLogProcessor(t *testing.T) {
 	})
 
 	t.Run("Export Error Handling", func(t *testing.T) {
-		exporter := NewMockExporter()
+		exporter := &connectionFailureExporter{}
 		store := NewAuditLogInMemoryStore()
 		exceptionHandler := NewMockExceptionHandler()
-
-		// Set export error
-		exporter.SetExportError(fmt.Errorf("export failed"))
 
 		config := AuditLogProcessorConfig{
 			Exporter:           exporter,
@@ -479,7 +475,6 @@ func TestAuditLogProcessor(t *testing.T) {
 				BackoffMultiplier: 2.0,
 			},
 			WaitOnExport: false,
-			DeliveryMode: AuditDeliveryModeAsyncStoreRetry,
 		}
 
 		processor, err := NewAuditLogProcessor(config)
@@ -490,19 +485,46 @@ func TestAuditLogProcessor(t *testing.T) {
 
 		ctx := context.Background()
 
-		// Add a record
 		record := createTestRecord("test message", log.SeverityInfo)
 		if err := processor.OnEmit(ctx, &record); err != nil {
 			t.Fatalf("Failed to emit record: %v", err)
 		}
 
-		// Wait for retries to complete
 		time.Sleep(200 * time.Millisecond)
 
-		// Verify exception was handled
-		exceptions := exceptionHandler.GetExceptions()
-		if len(exceptions) == 0 {
-			t.Error("Expected exception to be handled after retries exhausted")
+		if store.GetRecordCount() == 0 {
+			t.Error("Expected connection failure to persist record for retry")
+		}
+	})
+
+	t.Run("HTTP Export Error Rejects Emit", func(t *testing.T) {
+		exporter := &httpResponseFailureExporter{}
+		store := NewAuditLogInMemoryStore()
+		exceptionHandler := NewMockExceptionHandler()
+
+		config := AuditLogProcessorConfig{
+			Exporter:           exporter,
+			AuditLogStore:      store,
+			ExceptionHandler:   exceptionHandler,
+			ScheduleDelay:      50 * time.Millisecond,
+			MaxExportBatchSize: 1,
+			ExporterTimeout:    time.Second,
+			RetryPolicy:        GetDefaultRetryPolicy(),
+			WaitOnExport:       false,
+		}
+
+		processor, err := NewAuditLogProcessor(config)
+		if err != nil {
+			t.Fatalf("Failed to create processor: %v", err)
+		}
+		defer processor.Shutdown(context.Background())
+
+		record := createTestRecord("http-error", log.SeverityInfo)
+		if err := processor.OnEmit(context.Background(), &record); err == nil {
+			t.Fatal("Expected emit to fail for HTTP collector error")
+		}
+		if store.GetRecordCount() != 0 {
+			t.Fatalf("Expected empty store for HTTP error, got %d", store.GetRecordCount())
 		}
 	})
 
@@ -520,7 +542,6 @@ func TestAuditLogProcessor(t *testing.T) {
 			ExporterTimeout:    time.Second,
 			RetryPolicy:        GetDefaultRetryPolicy(),
 			WaitOnExport:       false,
-			DeliveryMode:       AuditDeliveryModeAsyncStoreRetry,
 		}
 
 		processor, err := NewAuditLogProcessor(config)
@@ -573,7 +594,6 @@ func TestAuditLogProcessor(t *testing.T) {
 			ExporterTimeout:    time.Second,
 			RetryPolicy:        GetDefaultRetryPolicy(),
 			WaitOnExport:       false,
-			DeliveryMode:       AuditDeliveryModeAsyncStoreRetry,
 		}
 
 		processor, err := NewAuditLogProcessor(config)
@@ -607,18 +627,19 @@ func TestAuditLogProcessor(t *testing.T) {
 		}
 	})
 
-	t.Run("Sync Direct Delivery Without Store", func(t *testing.T) {
+	t.Run("Sync Export When Collector Healthy", func(t *testing.T) {
 		exporter := NewMockExporter()
+		store := NewAuditLogInMemoryStore()
 		exceptionHandler := NewMockExceptionHandler()
 		config := AuditLogProcessorConfig{
 			Exporter:           exporter,
+			AuditLogStore:      store,
 			ExceptionHandler:   exceptionHandler,
 			ScheduleDelay:      100 * time.Millisecond,
 			MaxExportBatchSize: 10,
 			ExporterTimeout:    time.Second,
 			RetryPolicy:        GetDefaultRetryPolicy(),
 			WaitOnExport:       true,
-			DeliveryMode:       AuditDeliveryModeSyncDirect,
 		}
 		processor, err := NewAuditLogProcessor(config)
 		if err != nil {
@@ -649,7 +670,6 @@ func TestAuditLogProcessor(t *testing.T) {
 			ExporterTimeout:    time.Second,
 			RetryPolicy:        GetDefaultRetryPolicy(),
 			WaitOnExport:       false,
-			DeliveryMode:       AuditDeliveryModeAsyncStoreRetry,
 		}
 		processor, err := NewAuditLogProcessor(config)
 		if err != nil {
@@ -676,7 +696,6 @@ func TestAuditLogProcessor(t *testing.T) {
 			ExporterTimeout:    time.Second,
 			RetryPolicy:        GetDefaultRetryPolicy(),
 			WaitOnExport:       false,
-			DeliveryMode:       AuditDeliveryModeAsyncStoreRetry,
 		}
 		processor, err := NewAuditLogProcessor(config)
 		if err != nil {
@@ -707,7 +726,6 @@ func TestAuditLogProcessorFileStoreCompactionAfterFlush(t *testing.T) {
 		ExporterTimeout:    5 * time.Second,
 		RetryPolicy:        GetDefaultRetryPolicy(),
 		WaitOnExport:       false,
-		DeliveryMode:       AuditDeliveryModeAsyncStoreRetry,
 	}
 	processor, err := NewAuditLogProcessor(cfg)
 	if err != nil {
@@ -755,9 +773,6 @@ func TestAuditLogProcessorBuilder(t *testing.T) {
 		if config.ExceptionHandler == nil {
 			t.Error("Expected default exception handler to be set")
 		}
-		if config.DeliveryMode != AuditDeliveryModeAsyncStoreRetry {
-			t.Error("Expected default delivery mode to be async_store_retry")
-		}
 	})
 
 	t.Run("Builder Configuration", func(t *testing.T) {
@@ -774,8 +789,7 @@ func TestAuditLogProcessorBuilder(t *testing.T) {
 			SetScheduleDelay(500 * time.Millisecond).
 			SetMaxExportBatchSize(100).
 			SetExporterTimeout(60 * time.Second).
-			SetWaitOnExport(true).
-			SetDeliveryMode(AuditDeliveryModeSyncDirect)
+			SetWaitOnExport(true)
 
 		config := builder.GetConfig()
 
@@ -793,9 +807,6 @@ func TestAuditLogProcessorBuilder(t *testing.T) {
 		}
 		if !config.WaitOnExport {
 			t.Error("Expected wait on export to be set")
-		}
-		if config.DeliveryMode != AuditDeliveryModeSyncDirect {
-			t.Error("Expected delivery mode to be sync_direct")
 		}
 	})
 
@@ -877,6 +888,33 @@ type failThenSucceedExporter struct {
 	exported          []Record
 }
 
+type connectionFailureGatedExporter struct {
+	mu           sync.Mutex
+	allowSuccess atomic.Bool
+	exported     []Record
+}
+
+func (e *connectionFailureGatedExporter) Export(ctx context.Context, records []Record) (ExportResult, error) {
+	if !e.allowSuccess.Load() {
+		return ExportResult{}, &net.OpError{Op: "dial", Err: errors.New("connection refused")}
+	}
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	copied := make([]Record, len(records))
+	copy(copied, records)
+	e.exported = append(e.exported, copied...)
+	return ExportOK(records), nil
+}
+
+func (e *connectionFailureGatedExporter) Shutdown(ctx context.Context) error  { return nil }
+func (e *connectionFailureGatedExporter) ForceFlush(ctx context.Context) error { return nil }
+
+func (e *connectionFailureGatedExporter) ExportedCount() int {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return len(e.exported)
+}
+
 type gatedExporter struct {
 	mu           sync.Mutex
 	allowSuccess atomic.Bool
@@ -930,8 +968,40 @@ func (e *failThenSucceedExporter) ExportedCount() int {
 	return len(e.exported)
 }
 
+type failThenSucceedConnectionExporter struct {
+	mu                sync.Mutex
+	failuresRemaining int
+	exported          []Record
+}
+
+func newFailThenSucceedConnectionExporter(failures int) *failThenSucceedConnectionExporter {
+	return &failThenSucceedConnectionExporter{failuresRemaining: failures, exported: make([]Record, 0)}
+}
+
+func (e *failThenSucceedConnectionExporter) Export(ctx context.Context, records []Record) (ExportResult, error) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if e.failuresRemaining > 0 {
+		e.failuresRemaining--
+		return ExportResult{}, &net.OpError{Op: "dial", Err: errors.New("connection refused")}
+	}
+	copied := make([]Record, len(records))
+	copy(copied, records)
+	e.exported = append(e.exported, copied...)
+	return ExportOK(records), nil
+}
+
+func (e *failThenSucceedConnectionExporter) Shutdown(ctx context.Context) error  { return nil }
+func (e *failThenSucceedConnectionExporter) ForceFlush(ctx context.Context) error { return nil }
+
+func (e *failThenSucceedConnectionExporter) ExportedCount() int {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return len(e.exported)
+}
+
 func TestAuditLogProcessorNoLossRetryRecovery(t *testing.T) {
-	exporter := newFailThenSucceedExporter(3)
+	exporter := newFailThenSucceedConnectionExporter(3)
 	store := NewAuditLogInMemoryStore()
 	cfg := AuditLogProcessorConfig{
 		Exporter:           exporter,
@@ -945,7 +1015,6 @@ func TestAuditLogProcessorNoLossRetryRecovery(t *testing.T) {
 			MaxBackoff:        5 * time.Millisecond,
 			BackoffMultiplier: 1.2,
 		},
-		DeliveryMode: AuditDeliveryModeAsyncStoreRetry,
 	}
 	processor, err := NewAuditLogProcessor(cfg)
 	if err != nil {
@@ -992,7 +1061,6 @@ func TestAuditLogProcessorNoLossForAcceptedRecordsDuringConcurrentShutdown(t *te
 			MaxBackoff:        10 * time.Millisecond,
 			BackoffMultiplier: 1.5,
 		},
-		DeliveryMode: AuditDeliveryModeAsyncStoreRetry,
 	}
 	processor, err := NewAuditLogProcessor(cfg)
 	if err != nil {
@@ -1050,7 +1118,6 @@ func TestAuditLogProcessorAsyncIgnoresCanceledEmitContext(t *testing.T) {
 			MaxBackoff:        5 * time.Millisecond,
 			BackoffMultiplier: 2,
 		},
-		DeliveryMode: AuditDeliveryModeAsyncStoreRetry,
 	}
 	processor, err := NewAuditLogProcessor(cfg)
 	if err != nil {
@@ -1086,7 +1153,7 @@ func TestAuditLogProcessorAsyncIgnoresCanceledEmitContext(t *testing.T) {
 }
 
 func TestAuditLogProcessorRestartReplaysFileStoreAfterRecovery(t *testing.T) {
-	exporter := &gatedExporter{}
+	exporter := &connectionFailureGatedExporter{}
 	storeDir := t.TempDir()
 	fileStore, err := NewAuditLogFileStore(storeDir)
 	if err != nil {
@@ -1105,7 +1172,6 @@ func TestAuditLogProcessorRestartReplaysFileStoreAfterRecovery(t *testing.T) {
 			MaxBackoff:        5 * time.Millisecond,
 			BackoffMultiplier: 1.2,
 		},
-		DeliveryMode: AuditDeliveryModeAsyncStoreRetry,
 	}
 
 	firstProcessor, err := NewAuditLogProcessor(firstCfg)
@@ -1123,7 +1189,7 @@ func TestAuditLogProcessorRestartReplaysFileStoreAfterRecovery(t *testing.T) {
 
 	time.Sleep(40 * time.Millisecond)
 	if err := firstProcessor.Shutdown(context.Background()); err == nil {
-		t.Fatalf("expected first shutdown to fail while exporter is blocked")
+		t.Fatalf("expected first shutdown to fail while collector is unreachable")
 	}
 
 	persistedAfterFailure, err := fileStore.GetAll(context.Background())
@@ -1189,7 +1255,6 @@ func TestAuditLogProcessorLoadExistingRecordsUsesWalkRecords(t *testing.T) {
 			MaxBackoff:        5 * time.Millisecond,
 			BackoffMultiplier: 1.2,
 		},
-		DeliveryMode: AuditDeliveryModeAsyncStoreRetry,
 	}
 	processor, err := NewAuditLogProcessor(cfg)
 	if err != nil {
@@ -1238,7 +1303,6 @@ func TestAuditLogProcessorLoadExistingRecordsStreamsBoundedBatches(t *testing.T)
 			MaxBackoff:        5 * time.Millisecond,
 			BackoffMultiplier: 1.2,
 		},
-		DeliveryMode: AuditDeliveryModeAsyncStoreRetry,
 	}
 	processor, err := NewAuditLogProcessor(cfg)
 	if err != nil {
@@ -1289,7 +1353,6 @@ func TestAuditLogProcessorLoadExistingRecordsUsesPeekBatch(t *testing.T) {
 			MaxBackoff:        5 * time.Millisecond,
 			BackoffMultiplier: 1.2,
 		},
-		DeliveryMode: AuditDeliveryModeAsyncStoreRetry,
 	}
 	processor, err := NewAuditLogProcessor(cfg)
 	if err != nil {
@@ -1313,53 +1376,32 @@ func TestAuditLogProcessorLoadExistingRecordsUsesPeekBatch(t *testing.T) {
 	}
 }
 
-func TestAuditLogProcessorStorageWriteOnErrorDoesNotPersistSuccessfulExports(t *testing.T) {
-	exporter := NewMockExporter()
-	store := NewAuditLogInMemoryStore()
-	cfg := AuditLogProcessorConfig{
-		Exporter:           exporter,
-		AuditLogStore:      store,
-		ExceptionHandler:   NewMockExceptionHandler(),
-		ScheduleDelay:      5 * time.Millisecond,
-		MaxExportBatchSize: 1,
-		ExporterTimeout:    time.Second,
-		RetryPolicy: RetryPolicy{
-			InitialBackoff:    1 * time.Millisecond,
-			MaxBackoff:        5 * time.Millisecond,
-			BackoffMultiplier: 1.2,
-		},
-		DeliveryMode:     AuditDeliveryModeAsyncStoreRetry,
-		StorageWriteMode: AuditStorageWriteOnError,
-	}
-	processor, err := NewAuditLogProcessor(cfg)
-	if err != nil {
-		t.Fatalf("failed to create processor: %v", err)
-	}
-	defer processor.Shutdown(context.Background())
+type connectionFailureExporter struct{}
 
-	r := createTestRecord("on-error-success", log.SeverityInfo)
-	if err := processor.OnEmit(context.Background(), &r); err != nil {
-		t.Fatalf("emit failed: %v", err)
-	}
-	deadline := time.Now().Add(2 * time.Second)
-	for time.Now().Before(deadline) {
-		if exporter.GetExportCount() >= 1 {
-			break
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
-	if got := store.GetRecordCount(); got != 0 {
-		t.Fatalf("expected empty store for successful export with on_error mode, got %d", got)
-	}
+func (e *connectionFailureExporter) Export(ctx context.Context, records []Record) (ExportResult, error) {
+	return ExportResult{}, &net.OpError{Op: "dial", Err: errors.New("connection refused")}
 }
 
-func TestAuditLogProcessorStorageWriteOnErrorPersistsFailedExports(t *testing.T) {
-	exporter := &gatedExporter{}
+func (e *connectionFailureExporter) Shutdown(ctx context.Context) error  { return nil }
+func (e *connectionFailureExporter) ForceFlush(ctx context.Context) error { return nil }
+
+type httpResponseFailureExporter struct{}
+
+func (e *httpResponseFailureExporter) Export(ctx context.Context, records []Record) (ExportResult, error) {
+	return ExportResult{}, fmt.Errorf("failed to send logs to http://localhost:4318/v1/audit: 503 Service Unavailable (body: (empty))")
+}
+
+func (e *httpResponseFailureExporter) Shutdown(ctx context.Context) error  { return nil }
+func (e *httpResponseFailureExporter) ForceFlush(ctx context.Context) error { return nil }
+
+func TestAuditLogProcessorConnectionFailurePersistsForAsyncRetry(t *testing.T) {
+	exporter := &connectionFailureExporter{}
 	store := NewAuditLogInMemoryStore()
+	handler := NewMockExceptionHandler()
 	cfg := AuditLogProcessorConfig{
 		Exporter:           exporter,
 		AuditLogStore:      store,
-		ExceptionHandler:   NewMockExceptionHandler(),
+		ExceptionHandler:   handler,
 		ScheduleDelay:      5 * time.Millisecond,
 		MaxExportBatchSize: 1,
 		ExporterTimeout:    time.Second,
@@ -1368,8 +1410,6 @@ func TestAuditLogProcessorStorageWriteOnErrorPersistsFailedExports(t *testing.T)
 			MaxBackoff:        5 * time.Millisecond,
 			BackoffMultiplier: 1.2,
 		},
-		DeliveryMode:     AuditDeliveryModeAsyncStoreRetry,
-		StorageWriteMode: AuditStorageWriteOnError,
 	}
 	processor, err := NewAuditLogProcessor(cfg)
 	if err != nil {
@@ -1377,7 +1417,7 @@ func TestAuditLogProcessorStorageWriteOnErrorPersistsFailedExports(t *testing.T)
 	}
 	defer processor.Shutdown(context.Background())
 
-	r := createTestRecord("on-error-fail", log.SeverityInfo)
+	r := createTestRecord("conn-error-persist", log.SeverityInfo)
 	if err := processor.OnEmit(context.Background(), &r); err != nil {
 		t.Fatalf("emit failed: %v", err)
 	}
@@ -1389,17 +1429,18 @@ func TestAuditLogProcessorStorageWriteOnErrorPersistsFailedExports(t *testing.T)
 		time.Sleep(10 * time.Millisecond)
 	}
 	if got := store.GetRecordCount(); got == 0 {
-		t.Fatalf("expected failed export to be persisted with on_error mode")
+		t.Fatalf("expected connection failure to be persisted for async retry, got empty store")
 	}
 }
 
-func TestAuditLogProcessorStorageWriteOnErrorSkipsRemoveForFreshSuccessfulBatch(t *testing.T) {
-	exporter := NewMockExporter()
-	store := newCountingInMemoryStore()
+func TestAuditLogProcessorHTTPFailureDoesNotPersist(t *testing.T) {
+	exporter := &httpResponseFailureExporter{}
+	store := NewAuditLogInMemoryStore()
+	handler := NewMockExceptionHandler()
 	cfg := AuditLogProcessorConfig{
 		Exporter:           exporter,
 		AuditLogStore:      store,
-		ExceptionHandler:   NewMockExceptionHandler(),
+		ExceptionHandler:   handler,
 		ScheduleDelay:      5 * time.Millisecond,
 		MaxExportBatchSize: 1,
 		ExporterTimeout:    time.Second,
@@ -1408,8 +1449,6 @@ func TestAuditLogProcessorStorageWriteOnErrorSkipsRemoveForFreshSuccessfulBatch(
 			MaxBackoff:        5 * time.Millisecond,
 			BackoffMultiplier: 1.2,
 		},
-		DeliveryMode:     AuditDeliveryModeAsyncStoreRetry,
-		StorageWriteMode: AuditStorageWriteOnError,
 	}
 	processor, err := NewAuditLogProcessor(cfg)
 	if err != nil {
@@ -1417,19 +1456,33 @@ func TestAuditLogProcessorStorageWriteOnErrorSkipsRemoveForFreshSuccessfulBatch(
 	}
 	defer processor.Shutdown(context.Background())
 
-	r := createTestRecord("on-error-no-remove", log.SeverityInfo)
-	if err := processor.OnEmit(context.Background(), &r); err != nil {
-		t.Fatalf("emit failed: %v", err)
+	r := createTestRecord("http-error-drop", log.SeverityInfo)
+	if err := processor.OnEmit(context.Background(), &r); err == nil {
+		t.Fatalf("expected emit to fail for HTTP collector error")
 	}
 	deadline := time.Now().Add(2 * time.Second)
 	for time.Now().Before(deadline) {
-		if exporter.GetExportCount() >= 1 {
+		if len(handler.GetExceptions()) >= 1 {
 			break
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
-	if got := store.removeCalls.Load(); got != 0 {
-		t.Fatalf("expected no RemoveAll calls for fresh successful batch in on_error mode, got %d", got)
+	if got := store.GetRecordCount(); got != 0 {
+		t.Fatalf("expected empty store for HTTP failure, got %d", got)
+	}
+	exceptions := handler.GetExceptions()
+	var found bool
+	for _, ex := range exceptions {
+		if ex.Message == "Collector returned an error; audit records are logged and not stored" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("expected collector error to be logged via exception handler, got %#v", exceptions)
+	}
+	if got := processor.GetQueueSize(); got != 0 {
+		t.Fatalf("expected dropped HTTP failures to leave queue empty, got %d", got)
 	}
 }
 
@@ -1448,7 +1501,6 @@ func TestAuditLogProcessorShutdownIsIdempotent(t *testing.T) {
 			MaxBackoff:        5 * time.Millisecond,
 			BackoffMultiplier: 1.5,
 		},
-		DeliveryMode: AuditDeliveryModeAsyncStoreRetry,
 	}
 	processor, err := NewAuditLogProcessor(cfg)
 	if err != nil {
@@ -1467,7 +1519,7 @@ func TestAuditLogProcessorShutdownIsIdempotent(t *testing.T) {
 }
 
 func TestAuditLogProcessorShutdownAfterFailedExportKeepsStoredRecords(t *testing.T) {
-	exporter := &gatedExporter{}
+	exporter := &connectionFailureGatedExporter{}
 	storeDir := t.TempDir()
 	store, err := NewAuditLogFileStore(storeDir)
 	if err != nil {
@@ -1485,7 +1537,6 @@ func TestAuditLogProcessorShutdownAfterFailedExportKeepsStoredRecords(t *testing
 			MaxBackoff:        5 * time.Millisecond,
 			BackoffMultiplier: 1.2,
 		},
-		DeliveryMode: AuditDeliveryModeAsyncStoreRetry,
 	}
 	processor, err := NewAuditLogProcessor(cfg)
 	if err != nil {
@@ -1502,7 +1553,7 @@ func TestAuditLogProcessorShutdownAfterFailedExportKeepsStoredRecords(t *testing
 
 	time.Sleep(40 * time.Millisecond)
 	if err := processor.Shutdown(context.Background()); err == nil {
-		t.Fatalf("expected shutdown error when exports fail")
+		t.Fatalf("expected shutdown error when collector is unreachable")
 	}
 
 	persisted, err := store.GetAll(context.Background())
@@ -1515,8 +1566,7 @@ func TestAuditLogProcessorShutdownAfterFailedExportKeepsStoredRecords(t *testing
 }
 
 func TestAuditLogProcessorMaxAttemptsStopsRequeue(t *testing.T) {
-	exporter := NewMockExporter()
-	exporter.SetExportError(fmt.Errorf("export down"))
+	exporter := &connectionFailureExporter{}
 	store := NewAuditLogInMemoryStore()
 	handler := NewMockExceptionHandler()
 	cfg := AuditLogProcessorConfig{
@@ -1532,7 +1582,6 @@ func TestAuditLogProcessorMaxAttemptsStopsRequeue(t *testing.T) {
 			BackoffMultiplier: 1,
 			MaxAttempts:       2,
 		},
-		DeliveryMode: AuditDeliveryModeAsyncStoreRetry,
 	}
 	processor, err := NewAuditLogProcessor(cfg)
 	if err != nil {
