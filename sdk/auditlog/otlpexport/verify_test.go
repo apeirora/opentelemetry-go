@@ -75,6 +75,54 @@ func TestVerifyStartupTLSAcceptsMatchingCA(t *testing.T) {
 	}
 }
 
+func TestVerifyStartupStrictFailsWhenCollectorUnreachable(t *testing.T) {
+	t.Parallel()
+
+	exp, err := otlpexport.NewHTTP(
+		context.Background(),
+		otlpexport.WithEndpoint("127.0.0.1:1"),
+		otlpexport.WithInsecure(),
+		otlpexport.WithStrictStartupVerify(true),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = exp.Shutdown(context.Background()) }()
+
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	if err := exp.(auditlog.StartupExporterVerifier).VerifyStartup(ctx); err == nil {
+		t.Fatal("expected strict startup verify to fail when collector is unreachable")
+	}
+}
+
+func TestVerifyStartupStrictTCPAcceptsInsecureCollector(t *testing.T) {
+	t.Parallel()
+
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = ln.Close() }()
+
+	exp, err := otlpexport.NewHTTP(
+		context.Background(),
+		otlpexport.WithEndpoint(ln.Addr().String()),
+		otlpexport.WithInsecure(),
+		otlpexport.WithStrictStartupVerify(true),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = exp.Shutdown(context.Background()) }()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	if err := exp.(auditlog.StartupExporterVerifier).VerifyStartup(ctx); err != nil {
+		t.Fatalf("expected strict tcp check to succeed: %v", err)
+	}
+}
+
 func TestVerifyStartupSkipsWhenCollectorUnreachable(t *testing.T) {
 	t.Parallel()
 

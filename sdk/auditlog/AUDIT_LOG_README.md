@@ -23,6 +23,10 @@ Use `go.opentelemetry.io/otel/sdk/auditlog/otlpexport` for OTLP/HTTP audit expor
 
 When using HTTPS, `AuditLogProcessorBuilder.Build()` verifies TLS trust and client certificate configuration before the processor starts. A reachable collector with invalid TLS credentials prevents startup; a temporarily offline collector does not.
 
+Use `otlpexport.WithStrictStartupVerify(true)` when the application must not start unless the collector is reachable and TLS checks pass (TCP dial for insecure HTTP, TLS handshake for HTTPS). Without strict mode, an offline collector is tolerated at startup.
+
+The audit OTLP HTTP exporter applies one inline HTTP retry per `Export()` call by default (`InitialInterval` 200ms, `MaxElapsedTime` 750ms). Disable with `otlpexport.WithHTTPRetry(false)` or tune via standard `otlploghttp.WithRetry`.
+
 ## Core Types
 
 ### `AuditLogStore`
@@ -98,8 +102,14 @@ Available builder setters:
 `AuditLogProcessor` uses one delivery model:
 
 - **Collector reachable**: each record is exported synchronously on emit.
-- **Collector unreachable** (connection/DNS/timeout): the record is saved to the configured store, queued, and retried in the background.
-- **Collector returns HTTP error**: the error is logged and the record is not stored.
+- **Collector unreachable** (connection/DNS/timeout): the record is saved to the configured store, queued, and retried in the background. `EmitWithResult` returns `503` / `stored` with reason `collector_unreachable_stored` so the application can decide how to respond.
+- **Collector returns HTTP error on emit**: the error is logged and the record is **not** stored. `EmitWithResult` returns `503` / `rejected`.
+- **Collector returns HTTP error on background export** of a previously stored record: the store entry is **retained**, the batch is **re-queued**, and export is retried with configured backoff (`RetryPolicy`). `RemoveAll` runs only after a successful export.
+- **`MaxAttempts` exceeded** on background export: the export circuit opens for `CircuitOpenDuration` (defaults to `MaxBackoff`), pauses export, then half-opens and resyncs pending store records into the queue for another probe cycle.
+
+Records are removed from `AuditLogStore` only after a successful export (`RemoveAll` on the exported batch).
+
+Use `-filestore` (or a durable store backend) when you need crash recovery; the in-memory default does not survive process restarts.
 
 Choose a storage backend when building the processor:
 
@@ -240,7 +250,18 @@ _ = result
 
 Audit errors are represented with status-aligned codes in `audit_errors.go` (`AuditErrorInvalidRequest`, `AuditErrorForbidden`, `AuditErrorConflict`, `AuditErrorTooManyRequests`, `AuditErrorUnavailable`, and others).
 
-Processor-side failures are surfaced through `AuditExceptionHandler`.
+Processor-side failures are surfaced through `AuditExceptionHandler`. Each `AuditException` includes a machine-readable `Status` (`AuditExceptionStatus`) so handlers can branch without parsing `Message`:
+
+| `Status` | Meaning |
+|----------|---------|
+| `shutdown` | Emit rejected because the processor is shut down |
+| `collector_rejected` | Collector returned an HTTP error on emit (not stored) |
+| `collector_unreachable_stored` | Transport failure; record saved for background retry |
+| `store_save_failed` | Could not persist record to the configured store |
+| `store_remove_failed` | Export succeeded but store compaction failed |
+| `export_retrying` | Background export failed; retry scheduled |
+| `export_max_attempts_exceeded` | Retry budget exhausted for the current circuit cycle |
+| `export_circuit_open` | Export circuit open; stored records will be resynced after cooldown |
 
 ## Related Examples
 
@@ -501,7 +522,8 @@ func TestAuditLogging(t *testing.T) {
 
 | Option | Type | Default | Description |
 |--------|------|---------|-------------|
-| `MaxAttempts` | `int` | `0` (unlimited) | Maximum export retry cycles after a failed batch; records remain in the store (or queue if not yet persisted) when exceeded |
+| `MaxAttempts` | `int` | `0` (unlimited) | Maximum export retry attempts per circuit cycle after a failed batch |
+| `CircuitOpenDuration` | `time.Duration` | `MaxBackoff` | Pause before half-opening the export circuit and resyncing stored records |
 | `InitialBackoff` | `time.Duration` | `1s` | Initial backoff duration |
 | `MaxBackoff` | `time.Duration` | `1m` | Maximum backoff duration |
 | `BackoffMultiplier` | `float64` | `2.0` | Backoff multiplier |

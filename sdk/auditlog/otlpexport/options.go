@@ -25,20 +25,24 @@ type optionFunc func(*buildConfig)
 func (f optionFunc) apply(c *buildConfig) { f(c) }
 
 type buildConfig struct {
-	otlpOpts []otlploghttp.Option
-	verify   verifySettings
+	otlpOpts         []otlploghttp.Option
+	verify           verifySettings
+	httpRetrySet     bool
+	httpRetryEnabled bool
 }
 
 type verifySettings struct {
-	endpoint       string
-	endpointSet    bool
-	insecure       bool
-	insecureSet    bool
-	tlsCfg         *tlsConfigHolder
-	timeout        time.Duration
-	timeoutSet     bool
-	startupVerify  bool
-	startupVerifySet bool
+	endpoint           string
+	endpointSet        bool
+	insecure           bool
+	insecureSet        bool
+	tlsCfg             *tlsConfigHolder
+	timeout            time.Duration
+	timeoutSet         bool
+	startupVerify      bool
+	startupVerifySet   bool
+	strictStartupVerify bool
+	strictStartupSet   bool
 }
 
 type tlsConfigHolder struct {
@@ -128,6 +132,24 @@ func WithStartupVerify(enabled bool) Option {
 	return optionFunc(func(c *buildConfig) {
 		c.verify.startupVerify = enabled
 		c.verify.startupVerifySet = true
+	})
+}
+
+func WithStrictStartupVerify(strict bool) Option {
+	return optionFunc(func(c *buildConfig) {
+		c.verify.strictStartupVerify = strict
+		c.verify.strictStartupSet = true
+		if strict {
+			c.verify.startupVerify = true
+			c.verify.startupVerifySet = true
+		}
+	})
+}
+
+func WithHTTPRetry(enabled bool) Option {
+	return optionFunc(func(c *buildConfig) {
+		c.httpRetrySet = true
+		c.httpRetryEnabled = enabled
 	})
 }
 

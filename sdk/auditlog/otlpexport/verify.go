@@ -30,7 +30,7 @@ func normalizeHost(endpoint string) string {
 
 func verifyTLSAtStartup(ctx context.Context, settings verifySettings) error {
 	settings = settings.resolved()
-	if !settings.startupVerify || settings.insecure {
+	if !settings.startupVerify {
 		return nil
 	}
 
@@ -42,17 +42,30 @@ func verifyTLSAtStartup(ctx context.Context, settings verifySettings) error {
 	}
 
 	host := normalizeHost(settings.endpoint)
-	cfg := cloneTLSConfig(settings.tlsCfg, host)
 	dialer := &net.Dialer{Timeout: timeout}
+
+	if settings.insecure {
+		conn, err := dialer.DialContext(ctx, "tcp", host)
+		if err == nil {
+			_ = conn.Close()
+			return nil
+		}
+		if settings.strictStartupVerify {
+			return fmt.Errorf("otlp endpoint tcp check failed for %s: %w", host, err)
+		}
+		return nil
+	}
+
+	cfg := cloneTLSConfig(settings.tlsCfg, host)
 	conn, err := tls.DialWithDialer(dialer, "tcp", host, cfg)
 	if err == nil {
 		_ = conn.Close()
 		return nil
 	}
-	if isBenignCollectorUnreachable(err) {
-		return nil
+	if settings.strictStartupVerify || !isBenignCollectorUnreachable(err) {
+		return fmt.Errorf("otlp tls verification failed for %s: %w", host, err)
 	}
-	return fmt.Errorf("otlp tls verification failed for %s: %w", host, err)
+	return nil
 }
 
 func cloneTLSConfig(holder *tlsConfigHolder, host string) *tls.Config {

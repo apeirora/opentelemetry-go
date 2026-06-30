@@ -22,6 +22,7 @@ func NewHTTP(ctx context.Context, opts ...Option) (auditlog.Exporter, error) {
 	for _, opt := range opts {
 		opt.apply(cfg)
 	}
+	cfg.appendHTTPRetryOption()
 	all := append([]otlploghttp.Option{otlploghttp.WithURLPath(defaultAuditURLPath)}, cfg.otlpOpts...)
 	inner, err := otlploghttp.New(ctx, all...)
 	if err != nil {

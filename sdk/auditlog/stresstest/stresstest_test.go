@@ -46,8 +46,7 @@ func TestStressOTLPWithIntermittentTimeouts(t *testing.T) {
 			URLPath:        "/v1/audit",
 			StartAccepting: true,
 			FailEveryN:     3,
-			FailBehavior:   mockreceiver.FailBehaviorTimeout,
-			FailDelay:      2 * time.Second,
+			FailBehavior:   mockreceiver.FailBehaviorHTTP503,
 		},
 		maxBatchSize: 1,
 	})
@@ -64,8 +63,8 @@ func TestStressOTLPWithIntermittentTimeouts(t *testing.T) {
 			total, got, h.recv.AcceptedRecords(), h.recv.RequestsTotal(), h.recv.FailedRequests(), h.pending())
 	}
 	if h.recv.FailedRequests() == 0 {
-		t.Fatal("expected some simulated timeout failures")
+		t.Fatal("expected some simulated 503 failures")
 	}
-	t.Logf("delivered %d records after %d requests (%d timeouts)",
+	t.Logf("delivered %d records after %d requests (%d simulated 503 failures)",
 		total, h.recv.RequestsTotal(), h.recv.FailedRequests())
 }

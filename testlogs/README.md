@@ -16,7 +16,7 @@ Rules for SDK + collector + backend wiring (see also `example-config.yaml` heade
 
 2. **Async is unsafe for now** — Stay sync end-to-end until async paths are hardened:
    - SDK: synchronous export when the collector is reachable (`WaitOnExport=true` in testapp); background store-and-retry only when the collector is unreachable
-   - Collector receiver: `response_mode: sync` (not `async` / 202 accept-then-deliver)
+   - Collector receiver: `response_mode: sync` — blocks until pipeline finishes (200/400/503). Do not use `async` (returns 202 immediately, delivers in background).
    - Processor: `certificatelogverify` `mode: sync`
    - Exporters: `sending_queue.enabled: false` (no background export queue)
 
@@ -112,16 +112,21 @@ powershell -ExecutionPolicy Bypass -File testlogs/run-e2e-scenarios.ps1
 | 07 | Mixed failures | 9 delivered, 3×400 | 9 accepted | ✅ |
 | 08 | 12s delay | 2/2 **503** timeout | no accept | ✅ fixed |
 
-## Key finding (scenarios 01–08, **before** config fix)
-
-The collector **sync receiver returns HTTP 200 to the SDK after verification passes**, while the `otlphttp` exporter to the flaky sink runs with **background retry**. Therefore:
-
-- SDK `status=200 delivered` ≠ guaranteed delivery to the final backend.
-- Sink `accepted` count is the ground truth for backend delivery within the test window.
-- For durability when the collector is **unreachable**, use SDK `-filestore` (connection failures are stored and retried). HTTP errors from a reachable collector are logged and not stored (not exercised in scenarios 01–08).
-
 Each scenario folder contains `testapp.log`, `collector.log`, `sink.log`, `meta.txt`, and `README.md`.
 
-## Config fix for 100% sync (2 exporters)
+> **Note:** Captured logs under `testlogs/*/` may be stale (e.g. old `sync_direct` banner). Re-run `testlogs/run-e2e-scenarios.ps1` after SDK changes to refresh artifacts.
 
-See `opentelemetry-collector-contrib/receiver/auditlogreceiver/example-config.yaml` and scenario **09**. Both `debug` and `otlp_http/test_standalone` use `sending_queue.enabled: false` so fan-out export errors propagate to the SDK as 503.
+## Historical note (scenarios 01–08, pre–scenario-09 config)
+
+Before scenario **09**, the collector could return HTTP 200 to the SDK after verification while the `otlphttp` exporter to the flaky sink still retried in the background. That made SDK `200 delivered` ≠ guaranteed backend delivery. Scenario **09** fixes this with `sending_queue.enabled: false` on all exporters so fan-out errors propagate as 503 to the SDK.
+
+## Sync end-to-end reference (scenario 09)
+
+See `opentelemetry-collector-contrib/receiver/auditlogreceiver/example-config.yaml` and [09-sync-two-exporters-verify](09-sync-two-exporters-verify/README.md). Both `debug` and `otlp_http/test_standalone` use `sending_queue.enabled: false` so export errors propagate to the SDK.
+
+### SDK durability summary
+
+- **Transport failure** (collector unreachable): record stored, background retry; `EmitWithResult` → `503 stored`.
+- **HTTP error on emit** (collector reachable): not stored; `EmitWithResult` → `503 rejected`.
+- **HTTP error on background export** of a stored record: store entry **retained**, batch **re-queued** with backoff until export succeeds.
+- Use `-filestore` for crash recovery; in-memory store is default in testapp.

@@ -110,8 +110,11 @@ func TestAuditIntegrationProviderAsyncFileRecovery(t *testing.T) {
 	for i := 0; i < total; i++ {
 		record := makeValidAuditRecordForTest(t, fmt.Sprintf("recovery-%d", i), hmacKey)
 		result := logger.EmitWithResult(context.Background(), record)
-		if result.StatusCode != 202 {
-			t.Fatalf("expected queued result 202, got %d (%s)", result.StatusCode, result.Reason)
+		if result.StatusCode != 503 || result.Status != "stored" {
+			t.Fatalf("expected stored result 503, got %d (%s %q)", result.StatusCode, result.Status, result.Reason)
+		}
+		if result.Reason != auditlog.ReasonCollectorUnreachableStored {
+			t.Fatalf("expected reason %q, got %q", auditlog.ReasonCollectorUnreachableStored, result.Reason)
 		}
 	}
 

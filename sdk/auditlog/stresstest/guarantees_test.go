@@ -40,13 +40,14 @@ func TestStressCrashRecoveryFileStoreOTLP(t *testing.T) {
 
 	opts := defaultAsyncOpts()
 	opts.maxBatchSize = 1
+	opts.deadEndpoint = "127.0.0.1:1"
 
 	store1, err := auditlog.NewAuditLogFileStore(storeDir)
 	if err != nil {
 		t.Fatal(err)
 	}
 	p1, prov1, logger1, _ := newProcessorOnStore(t, recv, store1, opts)
-	emitRecords(t, logger1, n)
+	emitRecordsAllowStored(t, logger1, n)
 	time.Sleep(80 * time.Millisecond)
 	_ = p1.Shutdown(context.Background())
 	_ = prov1.Shutdown(context.Background())
@@ -68,6 +69,7 @@ func TestStressCrashRecoveryFileStoreOTLP(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	opts.deadEndpoint = ""
 	p2, prov2, _, _ := newProcessorOnStore(t, recv, store2, opts)
 	defer func() {
 		_ = p2.Shutdown(context.Background())
@@ -83,24 +85,39 @@ func TestStressCrashRecoveryFileStoreOTLP(t *testing.T) {
 
 func TestStressSinkDownThenUp(t *testing.T) {
 	n := guaranteeRecordCount(t)
-	h := newStressHarness(t, harnessOpts{
-		receiverCfg: mockreceiver.Config{URLPath: "/v1/audit", StartAccepting: false},
-		maxBatchSize: 1,
-	})
+	recv, err := mockreceiver.Start(mockreceiver.Config{URLPath: "/v1/audit", StartAccepting: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		_ = recv.Close(ctx)
+	}()
 
-	emitRecords(t, h.logger, n)
+	opts := defaultAsyncOpts()
+	opts.maxBatchSize = 1
+	opts.deadEndpoint = "127.0.0.1:1"
+	store := auditlog.NewAuditLogInMemoryStore()
+	p1, prov1, logger1, _ := newProcessorOnStore(t, recv, store, opts)
+	emitRecordsAllowStored(t, logger1, n)
+	_ = p1.Shutdown(context.Background())
+	_ = prov1.Shutdown(context.Background())
 
 	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
 	defer cancel()
-	if err := mockreceiver.WaitForStoreCount(ctx, h.pending, n); err != nil {
+	if err := mockreceiver.WaitForStoreCount(ctx, pendingStore(store), n); err != nil {
 		t.Fatal(err)
 	}
-	if h.recv.UniqueRecordCount() != 0 {
-		t.Fatalf("sink down: expected 0 at receiver, got %d", h.recv.UniqueRecordCount())
-	}
 
-	h.recv.SetAccepting(true)
-	if err := mockreceiver.WaitForDrain(ctx, h.recv, n, h.pending); err != nil {
+	opts.deadEndpoint = ""
+	p2, prov2, _, _ := newProcessorOnStore(t, recv, store, opts)
+	defer func() {
+		_ = p2.Shutdown(context.Background())
+		_ = prov2.Shutdown(context.Background())
+	}()
+
+	if err := mockreceiver.WaitForDrain(ctx, recv, n, pendingStore(store)); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -108,7 +125,7 @@ func TestStressSinkDownThenUp(t *testing.T) {
 func TestStressMaxAttemptsLeavesRecordsInStore(t *testing.T) {
 	n := 5
 	h := newStressHarness(t, harnessOpts{
-		receiverCfg: mockreceiver.Config{URLPath: "/v1/audit", StartAccepting: false},
+		deadEndpoint: "127.0.0.1:1",
 		maxBatchSize: 1,
 		retryPolicy: auditlog.RetryPolicy{
 			InitialBackoff:    2 * time.Millisecond,
@@ -118,7 +135,7 @@ func TestStressMaxAttemptsLeavesRecordsInStore(t *testing.T) {
 		},
 	})
 
-	emitRecords(t, h.logger, n)
+	emitRecordsAllowStored(t, h.logger, n)
 
 	deadline := time.Now().Add(30 * time.Second)
 	for time.Now().Before(deadline) {
@@ -284,12 +301,13 @@ func TestStressProcessorReplaysFileStoreOnRestart(t *testing.T) {
 	}()
 
 	asyncOpts := defaultAsyncOpts()
+	asyncOpts.deadEndpoint = "127.0.0.1:1"
 	store1, err := auditlog.NewAuditLogFileStore(storeDir)
 	if err != nil {
 		t.Fatal(err)
 	}
 	p1, prov1, logger1, _ := newProcessorOnStore(t, recv, store1, asyncOpts)
-	emitRecords(t, logger1, n)
+	emitRecordsAllowStored(t, logger1, n)
 	time.Sleep(50 * time.Millisecond)
 	_ = p1.Shutdown(context.Background())
 	_ = prov1.Shutdown(context.Background())
@@ -309,6 +327,7 @@ func TestStressProcessorReplaysFileStoreOnRestart(t *testing.T) {
 	recv.SetAccepting(true)
 	recv.ResetStats()
 
+	asyncOpts.deadEndpoint = ""
 	storeReplay, err := auditlog.NewAuditLogFileStore(storeDir)
 	if err != nil {
 		t.Fatal(err)
@@ -351,15 +370,18 @@ func TestStressShutdownDrainsQueue(t *testing.T) {
 
 func TestStressConnectionFailurePersistsBeforeExport(t *testing.T) {
 	h := newStressHarness(t, harnessOpts{
-		receiverCfg:      mockreceiver.Config{URLPath: "/v1/audit", StartAccepting: false},
+		deadEndpoint:     "127.0.0.1:1",
 		maxBatchSize:     512,
 		scheduleDelay:    time.Hour,
 	})
 
 	rec := makeStressRecord(0)
 	res := h.logger.EmitWithResult(context.Background(), rec)
-	if res.StatusCode != 202 {
-		t.Fatalf("emit: %d %s", res.StatusCode, res.Reason)
+	if res.StatusCode != 503 || res.Status != "stored" {
+		t.Fatalf("emit: want 503 stored, got %d %s %q", res.StatusCode, res.Status, res.Reason)
+	}
+	if res.Reason != auditlog.ReasonCollectorUnreachableStored {
+		t.Fatalf("emit reason: want %q got %q", auditlog.ReasonCollectorUnreachableStored, res.Reason)
 	}
 	if got := h.pending(); got != 1 {
 		t.Fatalf("connection failure: want 1 in store before retry, got %d", got)

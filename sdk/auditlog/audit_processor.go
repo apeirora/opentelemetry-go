@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"math"
 	"os"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -16,7 +17,21 @@ import (
 	"go.opentelemetry.io/otel/audit"
 )
 
+type AuditExceptionStatus string
+
+const (
+	AuditExceptionShutdown                   AuditExceptionStatus = "shutdown"
+	AuditExceptionCollectorRejected          AuditExceptionStatus = "collector_rejected"
+	AuditExceptionCollectorUnreachableStored AuditExceptionStatus = "collector_unreachable_stored"
+	AuditExceptionStoreSaveFailed            AuditExceptionStatus = "store_save_failed"
+	AuditExceptionStoreRemoveFailed          AuditExceptionStatus = "store_remove_failed"
+	AuditExceptionExportRetrying             AuditExceptionStatus = "export_retrying"
+	AuditExceptionExportMaxAttemptsExceeded  AuditExceptionStatus = "export_max_attempts_exceeded"
+	AuditExceptionExportCircuitOpen          AuditExceptionStatus = "export_circuit_open"
+)
+
 type AuditException struct {
+	Status     AuditExceptionStatus
 	Message    string
 	Cause      error
 	Context    context.Context
@@ -48,8 +63,11 @@ type RetryPolicy struct {
 	InitialBackoff    time.Duration
 	MaxBackoff        time.Duration
 	BackoffMultiplier float64
-	// MaxAttempts limits export retry cycles after a failed batch. Zero means unlimited.
+	// MaxAttempts limits export retry cycles per circuit closed period. Zero means unlimited.
 	MaxAttempts int
+	// CircuitOpenDuration pauses background export after MaxAttempts is exceeded before
+	// resyncing the store to the queue and probing again. Zero uses MaxBackoff.
+	CircuitOpenDuration time.Duration
 }
 
 func GetDefaultRetryPolicy() RetryPolicy {
@@ -95,6 +113,9 @@ type AuditLogProcessor struct {
 
 	currentRetryAttempt atomic.Int32
 	lastRetryTimestamp  atomic.Int64
+
+	exportCircuitState atomic.Int32
+	circuitOpenUntil   atomic.Int64
 
 	stopChan   chan struct{}
 	wakeExport chan struct{}
@@ -363,12 +384,23 @@ func (p *AuditLogProcessor) scheduleExport() {
 func (p *AuditLogProcessor) invokeExport(message string) {
 	if err := p.exportLogs(false); err != nil {
 		p.config.ExceptionHandler.Handle(&AuditException{
+			Status:     auditExceptionStatusForExportErr(err),
 			Message:    message,
 			Cause:      err,
 			Context:    context.Background(),
 			LogRecords: nil,
 		})
 	}
+}
+
+func auditExceptionStatusForExportErr(err error) AuditExceptionStatus {
+	if err == nil {
+		return AuditExceptionExportRetrying
+	}
+	if strings.Contains(err.Error(), "stopped after") {
+		return AuditExceptionExportMaxAttemptsExceeded
+	}
+	return AuditExceptionExportRetrying
 }
 
 func (p *AuditLogProcessor) enqueueLoadedRecord(record Record) error {
@@ -395,8 +427,7 @@ func (p *AuditLogProcessor) replayStoredBatch(records []Record) error {
 	}
 	auditMetricsInstance().recordExported(ctx, int64(len(records)))
 	p.storeFlushReceipts(exportResult.Receipts)
-	p.currentRetryAttempt.Store(0)
-	p.lastRetryTimestamp.Store(0)
+	p.closeExportCircuit()
 	return p.removeExportedRecordsFromStore(ctx, records)
 }
 
@@ -433,6 +464,7 @@ func (p *AuditLogProcessor) OnEmit(ctx context.Context, record *Record) error {
 
 	if p.shutdown.Load() {
 		exception := &AuditException{
+			Status:     AuditExceptionShutdown,
 			Message:    "AuditLogProcessor is shutdown, cannot accept new logs",
 			Context:    ctx,
 			LogRecords: []Record{*record},
@@ -457,6 +489,7 @@ func (p *AuditLogProcessor) OnEmit(ctx context.Context, record *Record) error {
 	}
 	if !isExportConnectionFailure(err) {
 		exception := &AuditException{
+			Status:     AuditExceptionCollectorRejected,
 			Message:    "Collector returned an error; audit records are logged and not stored",
 			Cause:      err,
 			Context:    ctx,
@@ -469,6 +502,7 @@ func (p *AuditLogProcessor) OnEmit(ctx context.Context, record *Record) error {
 	storeCtx := nonCancelContext(ctx)
 	if err := p.config.AuditLogStore.Save(storeCtx, record); err != nil {
 		exception := &AuditException{
+			Status:     AuditExceptionStoreSaveFailed,
 			Message:    "Failed to save record to audit store",
 			Cause:      err,
 			Context:    ctx,
@@ -484,7 +518,14 @@ func (p *AuditLogProcessor) OnEmit(ctx context.Context, record *Record) error {
 	auditMetricsInstance().adjustQueueDepth(ctx, 1)
 	p.scheduleExport()
 
-	return nil
+	p.config.ExceptionHandler.Handle(&AuditException{
+		Status:     AuditExceptionCollectorUnreachableStored,
+		Message:    "Collector unreachable; audit record stored for background retry",
+		Cause:      err,
+		Context:    ctx,
+		LogRecords: []Record{*record},
+	})
+	return newAuditStatusError(AuditErrorCollectorUnreachable, ReasonCollectorUnreachableStored, true, err)
 }
 
 func (p *AuditLogProcessor) exportLogs(ignoreRetryDelay bool) error {
@@ -492,12 +533,27 @@ func (p *AuditLogProcessor) exportLogs(ignoreRetryDelay bool) error {
 		return nil
 	}
 
-	p.queueMutex.Lock()
-	if len(p.queue) == 0 {
-		p.queueMutex.Unlock()
+	if p.maybeAdvanceExportCircuit() {
 		return nil
 	}
+	if p.exportCircuitIsOpen() && !p.shutdown.Load() {
+		return nil
+	}
+
+	p.queueMutex.Lock()
+	queueLen := len(p.queue)
 	p.queueMutex.Unlock()
+	if queueLen == 0 {
+		if p.exportCircuitIsHalfOpen() {
+			p.resyncStoreToQueue()
+			p.queueMutex.Lock()
+			queueLen = len(p.queue)
+			p.queueMutex.Unlock()
+		}
+		if queueLen == 0 {
+			return nil
+		}
+	}
 
 	currentTime := time.Now().UnixMilli()
 	if !ignoreRetryDelay && p.currentRetryAttempt.Load() > 0 {
@@ -539,14 +595,16 @@ func (p *AuditLogProcessor) exportLogs(ignoreRetryDelay bool) error {
 	if err != nil {
 		if p.handleExportFailure(recordsToExport, err) {
 			maxAttempts := p.config.RetryPolicy.MaxAttempts
-			return fmt.Errorf("audit records dropped after %d retry attempts: %w", maxAttempts, err)
+			if maxAttempts > 0 {
+				return fmt.Errorf("audit records stopped after %d retry attempts: %w", maxAttempts, err)
+			}
+			return fmt.Errorf("audit export failed: %w", err)
 		}
 		return err
 	}
 	auditMetricsInstance().recordExported(ctx, int64(len(recordsToExport)))
 	p.storeFlushReceipts(exportResult.Receipts)
-	p.currentRetryAttempt.Store(0)
-	p.lastRetryTimestamp.Store(0)
+	p.closeExportCircuit()
 	return p.removeExportedRecordsFromStore(ctx, recordsToExport)
 }
 
@@ -568,6 +626,7 @@ func (p *AuditLogProcessor) removeExportedRecordsFromStore(ctx context.Context, 
 		}
 	}
 	p.config.ExceptionHandler.Handle(&AuditException{
+		Status:     AuditExceptionStoreRemoveFailed,
 		Message:    "Exported audit records but failed to remove them from the store (telemetry may have been delivered; file may still show old entries)",
 		Cause:      removeErr,
 		Context:    ctx,
@@ -598,28 +657,26 @@ func (p *AuditLogProcessor) calculateRetryDelay(attemptNumber int) int64 {
 }
 
 func (p *AuditLogProcessor) handleExportFailure(records []Record, cause error) bool {
-	if !isExportConnectionFailure(cause) {
-		_ = p.config.AuditLogStore.RemoveAll(context.Background(), records)
-		auditMetricsInstance().recordDropped(context.Background(), int64(len(records)))
-		p.markRecordsDropped(records, cause)
-		p.config.ExceptionHandler.Handle(&AuditException{
-			Message:    "Collector returned an error; audit records are logged and not stored",
-			Cause:      cause,
-			Context:    context.Background(),
-			LogRecords: records,
-		})
-		return true
-	}
-
 	nextAttempt := p.currentRetryAttempt.Add(1)
 	p.lastRetryTimestamp.Store(time.Now().UnixMilli())
 
 	maxAttempts := p.config.RetryPolicy.MaxAttempts
 	if maxAttempts > 0 && int(nextAttempt) > maxAttempts {
-		auditMetricsInstance().recordDropped(context.Background(), int64(len(records)))
-		p.markRecordsDropped(records, cause)
+		p.openExportCircuit()
 		p.config.ExceptionHandler.Handle(&AuditException{
-			Message:    fmt.Sprintf("Failed to export audit log records after %d retry attempts", maxAttempts),
+			Status: AuditExceptionExportMaxAttemptsExceeded,
+			Message: fmt.Sprintf(
+				"Failed to export audit log records after %d retry attempts; export circuit open for %s",
+				maxAttempts,
+				p.circuitOpenDuration(),
+			),
+			Cause:      cause,
+			Context:    context.Background(),
+			LogRecords: records,
+		})
+		p.config.ExceptionHandler.Handle(&AuditException{
+			Status:     AuditExceptionExportCircuitOpen,
+			Message:    "Audit export circuit open; stored records will be resynced after cooldown",
 			Cause:      cause,
 			Context:    context.Background(),
 			LogRecords: records,
@@ -627,8 +684,25 @@ func (p *AuditLogProcessor) handleExportFailure(records []Record, cause error) b
 		return true
 	}
 
+	if p.exportCircuitIsHalfOpen() {
+		p.openExportCircuit()
+		p.config.ExceptionHandler.Handle(&AuditException{
+			Status:     AuditExceptionExportCircuitOpen,
+			Message:    "Audit export circuit probe failed; reopening circuit",
+			Cause:      cause,
+			Context:    context.Background(),
+			LogRecords: records,
+		})
+		return true
+	}
+
+	retryMsg := "Failed to export audit log records"
+	if !isExportConnectionFailure(cause) {
+		retryMsg = "Collector returned an HTTP error; stored records will be retried"
+	}
 	p.config.ExceptionHandler.Handle(&AuditException{
-		Message:    "Failed to export audit log records",
+		Status:     AuditExceptionExportRetrying,
+		Message:    retryMsg,
 		Cause:      cause,
 		Context:    context.Background(),
 		LogRecords: records,
@@ -642,6 +716,7 @@ func (p *AuditLogProcessor) handleExportFailure(records []Record, cause error) b
 	p.queue = append(p.queue, cloned...)
 	p.queueMutex.Unlock()
 	auditMetricsInstance().adjustQueueDepth(context.Background(), int64(len(cloned)))
+	p.scheduleExport()
 	return false
 }
 

@@ -14,8 +14,11 @@ const (
 	AuditErrorConflict        AuditErrorCode = status.ErrorConflict
 	AuditErrorPayloadTooLarge AuditErrorCode = status.ErrorPayloadTooLarge
 	AuditErrorTooManyRequests AuditErrorCode = status.ErrorTooManyRequests
-	AuditErrorUnavailable     AuditErrorCode = status.ErrorUnavailable
+	AuditErrorUnavailable            AuditErrorCode = status.ErrorUnavailable
+	AuditErrorCollectorUnreachable AuditErrorCode = status.ErrorCollectorUnreachable
 )
+
+const ReasonCollectorUnreachableStored = "collector_unreachable_stored"
 
 type AuditStatusError = status.Error
 

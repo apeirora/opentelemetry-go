@@ -69,6 +69,7 @@ type harnessOpts struct {
 	fileStoreDir     string
 	scheduleDelay    time.Duration
 	exporterTimeout  time.Duration
+	deadEndpoint       string
 }
 
 type stressHarness struct {
@@ -149,6 +150,13 @@ func makeStressRecord(i int) auditlog.AuditRecord {
 	}
 }
 
+func stressExporterEndpoint(recv *mockreceiver.Receiver, opts harnessOpts) string {
+	if opts.deadEndpoint != "" {
+		return opts.deadEndpoint
+	}
+	return recv.HostPort()
+}
+
 func newStressHarness(t *testing.T, opts harnessOpts) *stressHarness {
 	t.Helper()
 
@@ -164,7 +172,7 @@ func newStressHarness(t *testing.T, opts harnessOpts) *stressHarness {
 
 	exporter, err := otlpexport.NewHTTP(
 		context.Background(),
-		otlpexport.WithEndpoint(recv.HostPort()),
+		otlpexport.WithEndpoint(stressExporterEndpoint(recv, opts)),
 		otlpexport.WithInsecure(),
 		otlpexport.WithURLPath(recv.URLPath()),
 	)
@@ -193,7 +201,7 @@ func newStressHarness(t *testing.T, opts harnessOpts) *stressHarness {
 	}
 	exporterTimeout := opts.exporterTimeout
 	if exporterTimeout <= 0 {
-		exporterTimeout = 500 * time.Millisecond
+		exporterTimeout = 5 * time.Second
 	}
 	retry := opts.retryPolicy
 	if retry.InitialBackoff == 0 && retry.MaxBackoff == 0 && retry.BackoffMultiplier == 0 {
@@ -258,7 +266,7 @@ func newProcessorOnStore(
 
 	exporter, err := otlpexport.NewHTTP(
 		context.Background(),
-		otlpexport.WithEndpoint(recv.HostPort()),
+		otlpexport.WithEndpoint(stressExporterEndpoint(recv, opts)),
 		otlpexport.WithInsecure(),
 		otlpexport.WithURLPath(recv.URLPath()),
 	)
@@ -277,7 +285,7 @@ func newProcessorOnStore(
 	}
 	exporterTimeout := opts.exporterTimeout
 	if exporterTimeout <= 0 {
-		exporterTimeout = 500 * time.Millisecond
+		exporterTimeout = 5 * time.Second
 	}
 	retry := opts.retryPolicy
 	if retry.InitialBackoff == 0 {
@@ -315,13 +323,25 @@ func newProcessorOnStore(
 }
 
 func emitRecords(t *testing.T, logger auditlog.AuditLogger, total int) {
+	emitRecordsWithStored(t, logger, total, false)
+}
+
+func emitRecordsAllowStored(t *testing.T, logger auditlog.AuditLogger, total int) {
+	emitRecordsWithStored(t, logger, total, true)
+}
+
+func emitRecordsWithStored(t *testing.T, logger auditlog.AuditLogger, total int, allowStored bool) {
 	t.Helper()
 	for i := 0; i < total; i++ {
 		rec := makeStressRecord(i)
 		res := logger.EmitWithResult(context.Background(), rec)
-		if res.StatusCode != 200 && res.StatusCode != 202 {
-			t.Fatalf("emit %d: status=%d %s reason=%q", i, res.StatusCode, res.Status, res.Reason)
+		if res.StatusCode == 200 || res.StatusCode == 202 {
+			continue
 		}
+		if allowStored && res.StatusCode == 503 && res.Status == "stored" {
+			continue
+		}
+		t.Fatalf("emit %d: status=%d %s reason=%q", i, res.StatusCode, res.Status, res.Reason)
 	}
 }
 

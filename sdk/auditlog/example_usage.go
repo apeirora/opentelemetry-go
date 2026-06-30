@@ -158,7 +158,7 @@ type ExampleExceptionHandler struct {
 
 func (h *ExampleExceptionHandler) Handle(exception *AuditException) {
 	h.alertCount++
-	fmt.Printf("🚨 AUDIT ALERT #%d: %s\n", h.alertCount, exception.Message)
+	fmt.Printf("🚨 AUDIT ALERT #%d [%s]: %s\n", h.alertCount, exception.Status, exception.Message)
 	if exception.Cause != nil {
 		fmt.Printf("   Cause: %v\n", exception.Cause)
 	}

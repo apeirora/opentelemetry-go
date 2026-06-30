@@ -11,8 +11,16 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 ### Added
 
 - In `go.opentelemetry.io/otel/sdk/auditlog/otlpexport`, verify OTLP HTTPS TLS configuration at processor startup via `StartupExporterVerifier`; misconfigured trust or client certificates fail `AuditLogProcessorBuilder.Build()` while an unreachable collector does not block startup.
+- In `go.opentelemetry.io/otel/sdk/auditlog/otlpexport`, add `WithStrictStartupVerify` to fail exporter/processor startup when the collector is unreachable (TCP check for insecure HTTP, TLS handshake for HTTPS).
+- In `go.opentelemetry.io/otel/sdk/auditlog`, add `collector_unreachable` emit status (`503` / `stored`, reason `collector_unreachable_stored`) when a record is persisted after a transport failure.
+- In `go.opentelemetry.io/otel/sdk/auditlog`, add `AuditExceptionStatus` on `AuditException` for structured exception-handler branching.
+- In `go.opentelemetry.io/otel/sdk/auditlog`, retain stored records when background export receives an HTTP rejection; remove store entries only after successful export.
+- In `go.opentelemetry.io/otel/sdk/auditlog`, re-queue stored batches with backoff when background export receives HTTP 503/429.
+- In `go.opentelemetry.io/otel/sdk/auditlog`, add an export circuit breaker after `MaxAttempts` is exceeded: pause background export, resync `AuditLogStore` into the queue after `CircuitOpenDuration`, then probe again without requiring process restart.
 
 ### Changed
+
+- In `go.opentelemetry.io/otel/sdk/auditlog/otlpexport`, apply one inline OTLP HTTP retry per `Export()` by default (`MaxElapsedTime` 750ms). Use `WithHTTPRetry(false)` to disable.
 
 - In `go.opentelemetry.io/otel/sdk/auditlog`, simplify `AuditLogProcessor` to a single delivery model: synchronous export when the collector is reachable, async store-and-retry only when the collector is unreachable. Remove `AuditDeliveryMode`, `AuditStorageWriteMode`, `SetDeliveryMode`, and `SetStorageWriteMode`.
 - In `go.opentelemetry.io/otel/sdk/auditlog`, align exported attribute keys with dotted audit naming (`audit.actor.id`, `audit.target.id`, `audit.record.id`, and related fields), remove `Enabled` from `AuditLogger` and `AuditRecordProcessor`, relax body/schema validation, auto-generate missing record IDs, and export queued records in FIFO order instead of severity priority.

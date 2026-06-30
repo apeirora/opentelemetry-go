@@ -201,9 +201,10 @@ func (l *auditLogger) EmitWithResult(ctx context.Context, record AuditRecord) Au
 	queuedAt := time.Now().UTC()
 	for _, p := range l.provider.processors {
 		if err := p.OnEmit(ctx, &otelRecord); err != nil {
-			mappedErr := newAuditStatusError(AuditErrorUnavailable, "processor_emit_failed", true, err)
-			result.StatusCode, result.Status, result.Reason = mapAuditError(mappedErr)
-			result.RetryAfter = time.Second
+			result.StatusCode, result.Status, result.Reason = mapAuditError(err)
+			if statusErr, ok := err.(*AuditStatusError); ok && statusErr.Retryable {
+				result.RetryAfter = time.Second
+			}
 			return result
 		}
 	}

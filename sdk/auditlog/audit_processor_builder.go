@@ -210,5 +210,8 @@ func (b *AuditLogProcessorBuilder) ValidateConfig() error {
 	if b.config.RetryPolicy.MaxAttempts < 0 {
 		return fmt.Errorf("retry policy max attempts must be non-negative")
 	}
+	if b.config.RetryPolicy.CircuitOpenDuration < 0 {
+		return fmt.Errorf("retry policy circuit open duration must be non-negative")
+	}
 	return nil
 }

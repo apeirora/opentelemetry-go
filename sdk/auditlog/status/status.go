@@ -13,8 +13,9 @@ const (
 	ErrorForbidden       ErrorCode = "forbidden"
 	ErrorConflict        ErrorCode = "conflict"
 	ErrorPayloadTooLarge ErrorCode = "payload_too_large"
-	ErrorTooManyRequests ErrorCode = "too_many_requests"
-	ErrorUnavailable     ErrorCode = "unavailable"
+	ErrorTooManyRequests        ErrorCode = "too_many_requests"
+	ErrorUnavailable            ErrorCode = "unavailable"
+	ErrorCollectorUnreachable ErrorCode = "collector_unreachable"
 )
 
 type Error struct {
@@ -67,6 +68,8 @@ func Map(err error) (int, string, string) {
 		return 429, "rejected", statusErr.Error()
 	case ErrorUnavailable:
 		return 503, "rejected", statusErr.Error()
+	case ErrorCollectorUnreachable:
+		return 503, "stored", statusErr.Message
 	default:
 		return 503, "rejected", statusErr.Error()
 	}
