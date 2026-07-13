@@ -1,0 +1,184 @@
+﻿go.exe : testapp: HMAC key from C:\Users\m.jarmolkiewicz\OTEL\opentelemetry-go\sdk\auditlog\testapp\dev_hmac_key.txt 
+(override with OTEL_AUDITLOG_HMAC_KEY_FILE or OTEL_AUDITLOG_HMAC_KEY)
+At C:\Users\m.jarmolkiewicz\OTEL\opentelemetry-go\testlogs\run-e2e-scenarios.ps1:64 char:19
++         $output = & go @allArgs 2>&1
++                   ~~~~~~~~~~~~~~~~~~
+    + CategoryInfo          : NotSpecified: (testapp: HMAC k...ITLOG_HMAC_KEY):String) [], RemoteException
+    + FullyQualifiedErrorId : NativeCommandError
+ 
+testapp: signing cert C:\Users\m.jarmolkiewicz\OTEL\opentelemetry-go\sdk\auditlog\testapp\dev_sign_cert.pem key 
+C:\Users\m.jarmolkiewicz\OTEL\opentelemetry-go\sdk\auditlog\testapp\dev_sign_key.pem (HMAC-only export to collector)
+testapp: OTLP TLS ca=C:\Users\m.jarmolkiewicz\OTEL\opentelemetry-go\sdk\auditlog\testapp\dev_otlp_ca.crt 
+cert=C:\Users\m.jarmolkiewicz\OTEL\opentelemetry-go\sdk\auditlog\testapp\dev_otlp_client.crt 
+key=C:\Users\m.jarmolkiewicz\OTEL\opentelemetry-go\sdk\auditlog\testapp\dev_otlp_client.key
+2026/06/30 11:46:53 WARN audit: verify host clock is NTP-synchronized; audit compliance requires accurate timestamps 
+(recommended offset < 1s)
+sending:
+{
+  "audit.action": "LOGIN",
+  "audit.actor.id": "alice@example.com",
+  "audit.actor.type": "user",
+  "audit.integrity.value": "b/S6APF6ImMuYU647geLtsRFgQRVnQOJsoOvwHR8x1E=",
+  "audit.outcome": "success",
+  "audit.record.id": "c634a6d8-57a0-4d0d-bbde-894009fdef71",
+  "audit.schema.version": "1.0",
+  "audit.source.id": "192.0.2.10",
+  "audit.target.id": "/api/widgets",
+  "base": "testapp",
+  "body": {
+    "event": "user.login",
+    "id": "c634a6d8-57a0-4d0d-bbde-894009fdef71",
+    "n": 0
+  },
+  "severity": "UNDEFINED",
+  "timestamp": "2026-06-30T09:46:53.1380357Z"
+}
+emit result: status=200 delivered record_id=c634a6d8-57a0-4d0d-bbde-894009fdef71 reason=""
+sending:
+{
+  "audit.action": "READ",
+  "audit.actor.id": "alice@example.com",
+  "audit.actor.type": "user",
+  "audit.integrity.value": "GwZSOJmyXnC93mkuD+Y3hY9r91YlOnkU2ji59UaaCFQ=",
+  "audit.outcome": "success",
+  "audit.record.id": "e8f427f4-0782-441c-80b3-6ad353ccc240",
+  "audit.schema.version": "1.0",
+  "audit.source.id": "192.0.2.11",
+  "audit.target.id": "/api/widgets",
+  "base": "testapp",
+  "body": {
+    "event": "resource.read",
+    "id": "e8f427f4-0782-441c-80b3-6ad353ccc240",
+    "n": 1
+  },
+  "severity": "UNDEFINED",
+  "timestamp": "2026-06-30T09:46:54.0648785Z"
+}
+emit result: status=200 delivered record_id=e8f427f4-0782-441c-80b3-6ad353ccc240 reason=""
+sending:
+{
+  "audit.action": "ACCESS",
+  "audit.actor.id": "alice@example.com",
+  "audit.actor.type": "user",
+  "audit.integrity.value": "f4VpvMlcy6TGrq2ADC1FGyqD2g1kIWtEG44MonN6ANE=",
+  "audit.outcome": "success",
+  "audit.record.id": "0f39b7f1-7da9-4656-993b-794914722adb",
+  "audit.schema.version": "1.0",
+  "audit.source.id": "192.0.2.12",
+  "audit.target.id": "/api/widgets",
+  "base": "testapp",
+  "body": {
+    "event": "policy.deny",
+    "id": "0f39b7f1-7da9-4656-993b-794914722adb",
+    "n": 2
+  },
+  "severity": "UNDEFINED",
+  "timestamp": "2026-06-30T09:46:54.8559489Z"
+}
+emit result: status=200 delivered record_id=0f39b7f1-7da9-4656-993b-794914722adb reason=""
+sending:
+{
+  "audit.action": "LOGIN",
+  "audit.actor.id": "alice@example.com",
+  "audit.actor.type": "user",
+  "audit.integrity.value": "C5f9BOl/tHNRP5oepMPf2Gv7l+nR3GEZZT6AupyRJCU=",
+  "audit.outcome": "success",
+  "audit.record.id": "06135b41-e7a5-4ff1-a834-1762929689b7",
+  "audit.schema.version": "1.0",
+  "audit.source.id": "192.0.2.10",
+  "audit.target.id": "/api/widgets",
+  "base": "testapp",
+  "body": {
+    "event": "user.login",
+    "id": "06135b41-e7a5-4ff1-a834-1762929689b7",
+    "n": 3
+  },
+  "severity": "UNDEFINED",
+  "timestamp": "2026-06-30T09:46:55.4062957Z"
+}
+emit result: status=200 delivered record_id=06135b41-e7a5-4ff1-a834-1762929689b7 reason=""
+sending:
+{
+  "audit.action": "READ",
+  "audit.actor.id": "alice@example.com",
+  "audit.actor.type": "user",
+  "audit.integrity.value": "rf4HVxZxO5Wq1lL5jbtq2DAQ5ANm/n3AynNyZf7OtmE=",
+  "audit.outcome": "success",
+  "audit.record.id": "c0707847-56e8-4a08-9fec-48f8084f1e8f",
+  "audit.schema.version": "1.0",
+  "audit.source.id": "192.0.2.11",
+  "audit.target.id": "/api/widgets",
+  "base": "testapp",
+  "body": {
+    "event": "resource.read",
+    "id": "c0707847-56e8-4a08-9fec-48f8084f1e8f",
+    "n": 4
+  },
+  "severity": "UNDEFINED",
+  "timestamp": "2026-06-30T09:46:55.9077195Z"
+}
+emit result: status=200 delivered record_id=c0707847-56e8-4a08-9fec-48f8084f1e8f reason=""
+sending:
+{
+  "audit.action": "ACCESS",
+  "audit.actor.id": "alice@example.com",
+  "audit.actor.type": "user",
+  "audit.integrity.value": "AUksBWqjH8gqdREpaA1j05MZixEZU/5b6wm6U6T5K0Y=",
+  "audit.outcome": "success",
+  "audit.record.id": "33e36669-0268-41a7-82af-d066cc54981f",
+  "audit.schema.version": "1.0",
+  "audit.source.id": "192.0.2.12",
+  "audit.target.id": "/api/widgets",
+  "base": "testapp",
+  "body": {
+    "event": "policy.deny",
+    "id": "33e36669-0268-41a7-82af-d066cc54981f",
+    "n": 5
+  },
+  "severity": "UNDEFINED",
+  "timestamp": "2026-06-30T09:46:56.5294625Z"
+}
+emit result: status=200 delivered record_id=33e36669-0268-41a7-82af-d066cc54981f reason=""
+sending:
+{
+  "audit.action": "LOGIN",
+  "audit.actor.id": "alice@example.com",
+  "audit.actor.type": "user",
+  "audit.integrity.value": "eodta+ZYsSY7vpQ5Eh5woFCSt3TV9mXWfNK6qyBDvhI=",
+  "audit.outcome": "success",
+  "audit.record.id": "9136dab9-5c9a-4c0b-b47b-1fd837d71907",
+  "audit.schema.version": "1.0",
+  "audit.source.id": "192.0.2.10",
+  "audit.target.id": "/api/widgets",
+  "base": "testapp",
+  "body": {
+    "event": "user.login",
+    "id": "9136dab9-5c9a-4c0b-b47b-1fd837d71907",
+    "n": 6
+  },
+  "severity": "UNDEFINED",
+  "timestamp": "2026-06-30T09:46:57.3682902Z"
+}
+emit result: status=200 delivered record_id=9136dab9-5c9a-4c0b-b47b-1fd837d71907 reason=""
+sending:
+{
+  "audit.action": "READ",
+  "audit.actor.id": "alice@example.com",
+  "audit.actor.type": "user",
+  "audit.integrity.value": "lwMz34Pp79wBwZripH2h5Hi4g0jLW3KjVRaj466citI=",
+  "audit.outcome": "success",
+  "audit.record.id": "d4b83d70-4d54-442d-951c-65a464f31b19",
+  "audit.schema.version": "1.0",
+  "audit.source.id": "192.0.2.11",
+  "audit.target.id": "/api/widgets",
+  "base": "testapp",
+  "body": {
+    "event": "resource.read",
+    "id": "d4b83d70-4d54-442d-951c-65a464f31b19",
+    "n": 7
+  },
+  "severity": "UNDEFINED",
+  "timestamp": "2026-06-30T09:46:58.1880607Z"
+}
+emit result: status=200 delivered record_id=d4b83d70-4d54-442d-951c-65a464f31b19 reason=""
+done.

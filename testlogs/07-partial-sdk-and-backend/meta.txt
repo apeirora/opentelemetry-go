@@ -1,0 +1,5 @@
+﻿scenario=07-partial-sdk-and-backend
+started=2026-06-30T11:47:22.1849846+02:00
+sink_args=-reject-every 4 -reject-code 503
+testapp_args=-count 12 -reject-every 4 -interval 100ms
+otlp_endpoint=https://localhost:4310/v1/audit

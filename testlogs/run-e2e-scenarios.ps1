@@ -10,6 +10,11 @@ $SinkDir = "C:\Users\m.jarmolkiewicz\OTEL\opentelemetry-collector-contrib\test-s
 $TestAppDir = Join-Path $Root "sdk\auditlog"
 $OtlpEndpoint = "https://localhost:4310/v1/audit"
 
+function Test-RedisAvailable {
+    $tcp = Test-NetConnection -ComputerName 127.0.0.1 -Port 6379 -WarningAction SilentlyContinue
+    return $tcp.TcpTestSucceeded
+}
+
 function Stop-E2EServices {
     foreach ($port in @(4310, 9999)) {
         $lines = netstat -ano | Select-String ":$port\s"
@@ -209,8 +214,73 @@ $scenarios = @(
         SinkCliArgs = @("-reject-every", "4", "-reject-code", "503")
         TestAppCliArgs = @("-count", "12", "-reject-every", "4", "-interval", "100ms")
         WaitAfterStart = 12
+    },
+    @{
+        Name = "08-backend-slow-timeout"
+        Readme = @"
+# 08 Backend Slow / Timeout
+
+## Setup
+- Sink: `-delay 12s` (exceeds collector exporter timeout)
+- SDK: 2 records
+
+## Expected behavior
+- SDK: `status=503 rejected` (timeout while collector waits on slow backend)
+- Sink: requests received but not accepted before timeout
+
+## Observed
+(Filled in after run)
+"@
+        SinkCliArgs = @("-reject-every", "0", "-delay", "12s")
+        TestAppCliArgs = @("-count", "2", "-interval", "500ms")
+        WaitAfterStart = 8
+    },
+    @{
+        Name = "09-sync-two-exporters-verify/happy"
+        Readme = @"
+# 09 Sync Two Exporters — Happy Path
+
+## Setup
+- Sink: accept all
+- SDK: 3 records, sync export
+
+## Expected behavior
+- SDK: 3/3 `status=200 delivered`
+- Both collector exporters (`debug` + `otlp_http`) complete synchronously
+
+## Observed
+(Filled in after run)
+"@
+        SinkCliArgs = @("-reject-every", "0")
+        TestAppCliArgs = @("-count", "3", "-quiet")
+        WaitAfterStart = 8
+    },
+    @{
+        Name = "09-sync-two-exporters-verify/reject-all"
+        Readme = @"
+# 09 Sync Two Exporters — Reject All
+
+## Setup
+- Sink: reject every request with HTTP 503
+- SDK: 2 records
+
+## Expected behavior
+- SDK: `status=503 rejected` after inline collector retries exhaust
+- Sink: `accepted=0`
+
+## Observed
+(Filled in after run)
+"@
+        SinkCliArgs = @("-reject-every", "1", "-reject-code", "503")
+        TestAppCliArgs = @("-count", "2", "-interval", "500ms")
+        WaitAfterStart = 10
     }
 )
+
+if (-not (Test-RedisAvailable)) {
+    Write-Host "ERROR: Redis is not listening on 127.0.0.1:6379. Start Redis before running e2e scenarios." -ForegroundColor Red
+    exit 1
+}
 
 Write-Host "=== Building flaky sink ==="
 Push-Location $SinkDir
@@ -252,7 +322,10 @@ sink_args=$($scenario.SinkCliArgs -join ' ')
 testapp_args=$($scenario.TestAppCliArgs -join ' ')
 otlp_endpoint=$OtlpEndpoint
 "@
-    Set-Content -Path (Join-Path $dir "meta.txt") -Value $meta -Encoding UTF8
+    Set-Content -Path (Join-Path $dir "meta.txt") -Value $meta -Encoding UTF8 -Force
+    if ($scenario.Readme) {
+        Set-Content -Path (Join-Path $dir "README.md") -Value $scenario.Readme -Encoding UTF8 -Force
+    }
 
     $exitCode = Run-TestApp -TestAppCliArgs $scenario.TestAppCliArgs -LogFile $testappLog
     Add-Content -Path (Join-Path $dir "meta.txt") -Value "testapp_exit=$exitCode"

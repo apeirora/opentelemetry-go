@@ -1,0 +1,6 @@
+﻿scenario=09-sync-two-exporters-verify/reject-all
+started=2026-06-30T11:49:13.4218288+02:00
+sink_args=-reject-every 1 -reject-code 503
+testapp_args=-count 2 -interval 500ms
+otlp_endpoint=https://localhost:4310/v1/audit
+testapp_exit=0

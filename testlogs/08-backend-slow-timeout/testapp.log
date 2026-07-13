@@ -1,0 +1,64 @@
+﻿go.exe : testapp: HMAC key from C:\Users\m.jarmolkiewicz\OTEL\opentelemetry-go\sdk\auditlog\testapp\dev_hmac_key.txt 
+(override with OTEL_AUDITLOG_HMAC_KEY_FILE or OTEL_AUDITLOG_HMAC_KEY)
+At C:\Users\m.jarmolkiewicz\OTEL\opentelemetry-go\testlogs\run-e2e-scenarios.ps1:64 char:19
++         $output = & go @allArgs 2>&1
++                   ~~~~~~~~~~~~~~~~~~
+    + CategoryInfo          : NotSpecified: (testapp: HMAC k...ITLOG_HMAC_KEY):String) [], RemoteException
+    + FullyQualifiedErrorId : NativeCommandError
+ 
+testapp: signing cert C:\Users\m.jarmolkiewicz\OTEL\opentelemetry-go\sdk\auditlog\testapp\dev_sign_cert.pem key 
+C:\Users\m.jarmolkiewicz\OTEL\opentelemetry-go\sdk\auditlog\testapp\dev_sign_key.pem (HMAC-only export to collector)
+testapp: OTLP TLS ca=C:\Users\m.jarmolkiewicz\OTEL\opentelemetry-go\sdk\auditlog\testapp\dev_otlp_ca.crt 
+cert=C:\Users\m.jarmolkiewicz\OTEL\opentelemetry-go\sdk\auditlog\testapp\dev_otlp_client.crt 
+key=C:\Users\m.jarmolkiewicz\OTEL\opentelemetry-go\sdk\auditlog\testapp\dev_otlp_client.key
+2026/06/30 11:48:04 WARN audit: verify host clock is NTP-synchronized; audit compliance requires accurate timestamps 
+(recommended offset < 1s)
+sending:
+{
+  "audit.action": "LOGIN",
+  "audit.actor.id": "alice@example.com",
+  "audit.actor.type": "user",
+  "audit.integrity.value": "K8Wxpl16nlvVg/0LaLzcu/Q7XTTerCjmpKGi0cmzXHo=",
+  "audit.outcome": "success",
+  "audit.record.id": "a9ff4437-1995-447a-8b12-0e057eb15572",
+  "audit.schema.version": "1.0",
+  "audit.source.id": "192.0.2.10",
+  "audit.target.id": "/api/widgets",
+  "base": "testapp",
+  "body": {
+    "event": "user.login",
+    "id": "a9ff4437-1995-447a-8b12-0e057eb15572",
+    "n": 0
+  },
+  "severity": "UNDEFINED",
+  "timestamp": "2026-06-30T09:48:04.0474236Z"
+}
+2026/06/30 11:48:12 Collector returned an error; audit records are logged and not stored: max retry time elapsed: 
+retry-able request failure: body: no more retries left: failed to make an HTTP request: Post 
+"http://localhost:9999/v1/logs": context deadline exceeded (Client.Timeout exceeded while awaiting headers)
+emit result: status=503 rejected record_id=a9ff4437-1995-447a-8b12-0e057eb15572 reason="Collector returned an error; audit records are logged and not stored: max retry time elapsed: retry-able request failure: body: no more retries left: failed to make an HTTP request: Post \"http://localhost:9999/v1/logs\": context deadline exceeded (Client.Timeout exceeded while awaiting headers)"
+sending:
+{
+  "audit.action": "READ",
+  "audit.actor.id": "alice@example.com",
+  "audit.actor.type": "user",
+  "audit.integrity.value": "QS7JccklFYL319rqUcESnpkoCrqNvyH7kUuY13VU7ec=",
+  "audit.outcome": "success",
+  "audit.record.id": "cb2e5ede-8505-4e26-8997-1faebd5a121e",
+  "audit.schema.version": "1.0",
+  "audit.source.id": "192.0.2.11",
+  "audit.target.id": "/api/widgets",
+  "base": "testapp",
+  "body": {
+    "event": "resource.read",
+    "id": "cb2e5ede-8505-4e26-8997-1faebd5a121e",
+    "n": 1
+  },
+  "severity": "UNDEFINED",
+  "timestamp": "2026-06-30T09:48:12.6091641Z"
+}
+2026/06/30 11:48:20 Collector returned an error; audit records are logged and not stored: max retry time elapsed: 
+retry-able request failure: body: no more retries left: failed to make an HTTP request: Post 
+"http://localhost:9999/v1/logs": context deadline exceeded (Client.Timeout exceeded while awaiting headers)
+emit result: status=503 rejected record_id=cb2e5ede-8505-4e26-8997-1faebd5a121e reason="Collector returned an error; audit records are logged and not stored: max retry time elapsed: retry-able request failure: body: no more retries left: failed to make an HTTP request: Post \"http://localhost:9999/v1/logs\": context deadline exceeded (Client.Timeout exceeded while awaiting headers)"
+done.

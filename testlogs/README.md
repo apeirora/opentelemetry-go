@@ -14,21 +14,25 @@ Rules for SDK + collector + backend wiring (see also `example-config.yaml` heade
 
 1. **Split durability by failure type** — When the collector is reachable, it owns durability (receiver WAL + sync pipeline). The SDK store/retry queue is used **only when the collector is unreachable** (connection failure, timeout, DNS). Do not persist and retry on both sides for the same record: HTTP responses from a reachable collector (200/400/503) are handled synchronously by the app; the SDK does not keep a competing backlog for those cases.
 
-2. **Async is unsafe for now** — Stay sync end-to-end until async paths are hardened:
+2. **Sync end-to-end** — Stay sync for the full path:
    - SDK: synchronous export when the collector is reachable (`WaitOnExport=true` in testapp); background store-and-retry only when the collector is unreachable
    - Collector receiver: `response_mode: sync` — blocks until pipeline finishes (200/400/503). Do not use `async` (returns 202 immediately, delivers in background).
-   - Processor: `certificatelogverify` `mode: sync`
+   - Processor: **`certificatelogverify` only** — no other processors in the audit `logs` pipeline (no `batch`, `attributes`, `transform`, `filter`, or any mutating processor)
    - Exporters: `sending_queue.enabled: false` (no background export queue)
 
 3. **SDK store** — A store is always required (in-memory by default in testapp; use `-filestore` for durable recovery when the collector is offline). Records are persisted only on connection failure, not on HTTP rejections from a reachable collector.
 
-4. **Collector receiver storage = WAL only** — `redis_storage` / `file_storage` is write-ahead log (persist before pipeline, delete on success). `recoverSyncPending` runs on restart; it is not a competing in-request retry worker.
+4. **Collector storage namespaces** — Receiver WAL uses `redis_storage/wal` (Redis db 0). Processor DLQ/hash chain uses `redis_storage/audit_meta` (Redis db 1, `dead_letter.key_prefix: audit_verify_dlq/`). SDK offline store stays app-side (not collector Redis). Exporters: `sending_queue.enabled: false`.
 
-5. **Propagate backend failures to the SDK** — With `sending_queue: false`, exporter `retry_on_failure` retries inline within the HTTP request (bounded by `max_elapsed_time`). HTTP 503 to the SDK means end-to-end delivery failed; the app must re-emit or escalate.
+5. **Collector receiver storage = WAL only** — write-ahead log (persist before pipeline, delete on success). `recoverSyncPending` on restart; not a competing in-request retry worker.
 
-6. **HTTP semantics** — `200` = verified and exported through the full sync pipeline. `400` = integrity/verification rejected (permanent). `503` = transient pipeline or backend failure.
+6. **Propagate backend failures to the SDK** — With `sending_queue: false`, exporter `retry_on_failure` retries inline within the HTTP request (bounded by `max_elapsed_time`). HTTP 503 to the SDK means end-to-end delivery failed; the app must re-emit or escalate.
 
-7. **Do not combine** — SDK `-filestore` durable backlog + collector receiver WAL with competing retry semantics; collector `response_mode: async` + SDK offline store-and-retry without clear ownership.
+7. **HTTP semantics** — `200` = verified and exported through the full sync pipeline (or OTLP `partialSuccess` when a multi-record batch has mixed verify results — see collector `partialSuccess` body). `400` = integrity/verification rejected (permanent; all records failed, or single-record fail in one-record-per-emit testapp). `503` = transient pipeline or backend failure. SDK: `503 rejected` = not stored; `503 stored` = collector unreachable only.
+
+8. **Do not combine** — SDK `-filestore` durable backlog + collector receiver WAL with competing retry semantics; collector `response_mode: async` + SDK offline store-and-retry without clear ownership.
+
+9. **Sink idempotency** — The SDK may resend the same `audit.record.id` after store replay (`RemoveAll` failure, restart before compaction, or export-circuit resync). Collectors and audit sinks must dedupe on `audit.record.id` (silent accept or reject duplicate). Exactly-once at the sink is not an SDK guarantee.
 
 **Recommended pairing (this test suite):** SDK sync export when collector is up → collector `response_mode: sync` + receiver WAL → sync processor → sync exporters.
 
@@ -58,8 +62,8 @@ certificatelogverifyprocessor  (HMAC + cert, strict)
 
 ### Collector (`example-config.yaml`)
 
-- **Receiver**: HTTPS mTLS on `0.0.0.0:4310`, path `/v1/audit`, `response_mode: sync`, Redis storage for WAL.
-- **Processor**: `certificatelogverify` — sync strict HMAC verification, dead-letter queue in Redis.
+- **Receiver**: HTTPS mTLS on `0.0.0.0:4310`, path `/v1/audit`, `response_mode: sync`, `redis_storage/wal` for sync WAL (Redis db 0).
+- **Processor**: `certificatelogverify` only (sync, strict HMAC verification). DLQ in `redis_storage/audit_meta` (Redis db 1), prefix `audit_verify_dlq/`.
 - **Exporters**: `debug` (detailed) + `otlphttp` → `http://localhost:9999`.
 - Exporters use `sending_queue: false` + inline `retry_on_failure` (bounded `max_elapsed_time`) so backend failures surface as **503** to the SDK within the same HTTP request.
 
@@ -73,7 +77,7 @@ Flags added for testing:
 
 ## Prerequisites
 
-- Redis on `127.0.0.1:6379` (collector `redis_storage` extension)
+- Redis on `127.0.0.1:6379` with **db 0** (WAL) and **db 1** (processor DLQ/metadata) — see `example-config.yaml` `redis_storage/wal` and `redis_storage/audit_meta`
 - Built binaries:
   - `opentelemetry-collector-contrib/bin/otelauditcol_windows_amd64.exe`
   - `opentelemetry-collector-contrib/test-standalone/flaky-otlp-backend.exe`
@@ -114,7 +118,7 @@ powershell -ExecutionPolicy Bypass -File testlogs/run-e2e-scenarios.ps1
 
 Each scenario folder contains `testapp.log`, `collector.log`, `sink.log`, `meta.txt`, and `README.md`.
 
-> **Note:** Captured logs under `testlogs/*/` may be stale (e.g. old `sync_direct` banner). Re-run `testlogs/run-e2e-scenarios.ps1` after SDK changes to refresh artifacts.
+Re-run `testlogs/run-e2e-scenarios.ps1` after SDK or collector config changes (requires Redis on `127.0.0.1:6379`).
 
 ## Historical note (scenarios 01–08, pre–scenario-09 config)
 
@@ -129,4 +133,5 @@ See `opentelemetry-collector-contrib/receiver/auditlogreceiver/example-config.ya
 - **Transport failure** (collector unreachable): record stored, background retry; `EmitWithResult` → `503 stored`.
 - **HTTP error on emit** (collector reachable): not stored; `EmitWithResult` → `503 rejected`.
 - **HTTP error on background export** of a stored record: store entry **retained**, batch **re-queued** with backoff until export succeeds.
+- **Sink idempotency:** replay may resend the same `audit.record.id`; sinks must dedupe on that key.
 - Use `-filestore` for crash recovery; in-memory store is default in testapp.

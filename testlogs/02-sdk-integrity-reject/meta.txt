@@ -1,0 +1,6 @@
+﻿scenario=02-sdk-integrity-reject
+started=2026-06-30T11:44:06.7947465+02:00
+sink_args=-reject-every 0
+testapp_args=-count 9 -reject-every 3
+otlp_endpoint=https://localhost:4310/v1/audit
+testapp_exit=0

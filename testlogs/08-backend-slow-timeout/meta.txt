@@ -1,0 +1,6 @@
+﻿scenario=08-backend-slow-timeout
+started=2026-06-30T11:47:53.3637598+02:00
+sink_args=-reject-every 0 -delay 12s
+testapp_args=-count 2 -interval 500ms
+otlp_endpoint=https://localhost:4310/v1/audit
+testapp_exit=0

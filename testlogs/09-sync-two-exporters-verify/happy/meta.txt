@@ -1,0 +1,6 @@
+﻿scenario=09-sync-two-exporters-verify/happy
+started=2026-06-30T11:48:40.7675235+02:00
+sink_args=-reject-every 0
+testapp_args=-count 3 -quiet
+otlp_endpoint=https://localhost:4310/v1/audit
+testapp_exit=0

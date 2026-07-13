@@ -1,0 +1,6 @@
+﻿scenario=05-backend-always-reject
+started=2026-06-30T11:45:39.4572835+02:00
+sink_args=-reject-every 1 -reject-code 503
+testapp_args=-count 3 -interval 500ms
+otlp_endpoint=https://localhost:4310/v1/audit
+testapp_exit=0

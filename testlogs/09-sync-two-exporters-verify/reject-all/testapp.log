@@ -1,0 +1,64 @@
+﻿go.exe : testapp: HMAC key from C:\Users\m.jarmolkiewicz\OTEL\opentelemetry-go\sdk\auditlog\testapp\dev_hmac_key.txt 
+(override with OTEL_AUDITLOG_HMAC_KEY_FILE or OTEL_AUDITLOG_HMAC_KEY)
+At C:\Users\m.jarmolkiewicz\OTEL\opentelemetry-go\testlogs\run-e2e-scenarios.ps1:64 char:19
++         $output = & go @allArgs 2>&1
++                   ~~~~~~~~~~~~~~~~~~
+    + CategoryInfo          : NotSpecified: (testapp: HMAC k...ITLOG_HMAC_KEY):String) [], RemoteException
+    + FullyQualifiedErrorId : NativeCommandError
+ 
+testapp: signing cert C:\Users\m.jarmolkiewicz\OTEL\opentelemetry-go\sdk\auditlog\testapp\dev_sign_cert.pem key 
+C:\Users\m.jarmolkiewicz\OTEL\opentelemetry-go\sdk\auditlog\testapp\dev_sign_key.pem (HMAC-only export to collector)
+testapp: OTLP TLS ca=C:\Users\m.jarmolkiewicz\OTEL\opentelemetry-go\sdk\auditlog\testapp\dev_otlp_ca.crt 
+cert=C:\Users\m.jarmolkiewicz\OTEL\opentelemetry-go\sdk\auditlog\testapp\dev_otlp_client.crt 
+key=C:\Users\m.jarmolkiewicz\OTEL\opentelemetry-go\sdk\auditlog\testapp\dev_otlp_client.key
+2026/06/30 11:49:22 WARN audit: verify host clock is NTP-synchronized; audit compliance requires accurate timestamps 
+(recommended offset < 1s)
+sending:
+{
+  "audit.action": "LOGIN",
+  "audit.actor.id": "alice@example.com",
+  "audit.actor.type": "user",
+  "audit.integrity.value": "p8/bdVMHIhRrcI5tmJGxjpLKm7YWJgY+ZLHOjxkn9S0=",
+  "audit.outcome": "success",
+  "audit.record.id": "5e1c9534-636b-4b92-84cd-a0d502d5181a",
+  "audit.schema.version": "1.0",
+  "audit.source.id": "192.0.2.10",
+  "audit.target.id": "/api/widgets",
+  "base": "testapp",
+  "body": {
+    "event": "user.login",
+    "id": "5e1c9534-636b-4b92-84cd-a0d502d5181a",
+    "n": 0
+  },
+  "severity": "UNDEFINED",
+  "timestamp": "2026-06-30T09:49:22.4591683Z"
+}
+2026/06/30 11:49:29 Collector returned an error; audit records are logged and not stored: max retry time elapsed: 
+retry-able request failure: body: no more retries left: rpc error: code = Unavailable desc = error exporting items, 
+request to http://localhost:9999/v1/logs responded with HTTP Status Code 503
+emit result: status=503 rejected record_id=5e1c9534-636b-4b92-84cd-a0d502d5181a reason="Collector returned an error; audit records are logged and not stored: max retry time elapsed: retry-able request failure: body: no more retries left: rpc error: code = Unavailable desc = error exporting items, request to http://localhost:9999/v1/logs responded with HTTP Status Code 503"
+sending:
+{
+  "audit.action": "READ",
+  "audit.actor.id": "alice@example.com",
+  "audit.actor.type": "user",
+  "audit.integrity.value": "APtsufvnF9jKWsTjJlZPTIt/AgUyKEZyqJuABB+jVwg=",
+  "audit.outcome": "success",
+  "audit.record.id": "f1242fa6-3a9b-4b09-ad7b-48eaa3748da2",
+  "audit.schema.version": "1.0",
+  "audit.source.id": "192.0.2.11",
+  "audit.target.id": "/api/widgets",
+  "base": "testapp",
+  "body": {
+    "event": "resource.read",
+    "id": "f1242fa6-3a9b-4b09-ad7b-48eaa3748da2",
+    "n": 1
+  },
+  "severity": "UNDEFINED",
+  "timestamp": "2026-06-30T09:49:30.4887997Z"
+}
+2026/06/30 11:49:38 Collector returned an error; audit records are logged and not stored: max retry time elapsed: 
+retry-able request failure: body: no more retries left: rpc error: code = Unavailable desc = error exporting items, 
+request to http://localhost:9999/v1/logs responded with HTTP Status Code 503
+emit result: status=503 rejected record_id=f1242fa6-3a9b-4b09-ad7b-48eaa3748da2 reason="Collector returned an error; audit records are logged and not stored: max retry time elapsed: retry-able request failure: body: no more retries left: rpc error: code = Unavailable desc = error exporting items, request to http://localhost:9999/v1/logs responded with HTTP Status Code 503"
+done.

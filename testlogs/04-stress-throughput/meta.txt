@@ -1,0 +1,8 @@
+﻿scenario=04-stress-throughput
+started=2026-06-18T14:17:25.8204026+02:00
+sink_args=-reject-every 0
+testapp_args=-count 30 -interval 10ms -quiet
+otlp_endpoint=https://localhost:4310/v1/audit
+testapp_exit=0
+testapp_exit=0
+testapp_exit=0

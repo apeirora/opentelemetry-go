@@ -1,0 +1,76 @@
+﻿go.exe : testapp: HMAC key from C:\Users\m.jarmolkiewicz\OTEL\opentelemetry-go\sdk\auditlog\testapp\dev_hmac_key.txt 
+(override with OTEL_AUDITLOG_HMAC_KEY_FILE or OTEL_AUDITLOG_HMAC_KEY)
+At C:\Users\m.jarmolkiewicz\OTEL\opentelemetry-go\testlogs\run-e2e-scenarios.ps1:64 char:19
++         $output = & go @allArgs 2>&1
++                   ~~~~~~~~~~~~~~~~~~
+    + CategoryInfo          : NotSpecified: (testapp: HMAC k...ITLOG_HMAC_KEY):String) [], RemoteException
+    + FullyQualifiedErrorId : NativeCommandError
+ 
+testapp: signing cert C:\Users\m.jarmolkiewicz\OTEL\opentelemetry-go\sdk\auditlog\testapp\dev_sign_cert.pem key 
+C:\Users\m.jarmolkiewicz\OTEL\opentelemetry-go\sdk\auditlog\testapp\dev_sign_key.pem (HMAC-only export to collector)
+testapp: OTLP TLS ca=C:\Users\m.jarmolkiewicz\OTEL\opentelemetry-go\sdk\auditlog\testapp\dev_otlp_ca.crt 
+cert=C:\Users\m.jarmolkiewicz\OTEL\opentelemetry-go\sdk\auditlog\testapp\dev_otlp_client.crt 
+key=C:\Users\m.jarmolkiewicz\OTEL\opentelemetry-go\sdk\auditlog\testapp\dev_otlp_client.key
+2026/06/30 11:48:50 WARN audit: verify host clock is NTP-synchronized; audit compliance requires accurate timestamps 
+(recommended offset < 1s)
+sending:
+{
+  "audit.action": "LOGIN",
+  "audit.actor.id": "alice@example.com",
+  "audit.actor.type": "user",
+  "audit.integrity.value": "wKQoFUs2GPTurBCzcBZuruJH6iDF6xuEw5RfB1ibc1k=",
+  "audit.outcome": "success",
+  "audit.record.id": "1c9d4010-52b6-4ced-be82-e663995c03e2",
+  "audit.schema.version": "1.0",
+  "audit.source.id": "192.0.2.10",
+  "audit.target.id": "/api/widgets",
+  "base": "testapp",
+  "body": {
+    "event": "user.login",
+    "id": "1c9d4010-52b6-4ced-be82-e663995c03e2",
+    "n": 0
+  },
+  "severity": "UNDEFINED",
+  "timestamp": "2026-06-30T09:48:50.8088998Z"
+}
+sending:
+{
+  "audit.action": "READ",
+  "audit.actor.id": "alice@example.com",
+  "audit.actor.type": "user",
+  "audit.integrity.value": "DmITGea7NkALnefvwFcFJbp4UjkQntk3chmqiZxtb1o=",
+  "audit.outcome": "success",
+  "audit.record.id": "ed3dd442-fbb0-4cdf-919f-d0ed0f982a01",
+  "audit.schema.version": "1.0",
+  "audit.source.id": "192.0.2.11",
+  "audit.target.id": "/api/widgets",
+  "base": "testapp",
+  "body": {
+    "event": "resource.read",
+    "id": "ed3dd442-fbb0-4cdf-919f-d0ed0f982a01",
+    "n": 1
+  },
+  "severity": "UNDEFINED",
+  "timestamp": "2026-06-30T09:48:50.8665542Z"
+}
+sending:
+{
+  "audit.action": "ACCESS",
+  "audit.actor.id": "alice@example.com",
+  "audit.actor.type": "user",
+  "audit.integrity.value": "QARj21qO4zeyls/MfyCJPg908gFWmoSxdzAWQ5Yt8oo=",
+  "audit.outcome": "success",
+  "audit.record.id": "07515178-de2d-4ea3-9627-5b233351adda",
+  "audit.schema.version": "1.0",
+  "audit.source.id": "192.0.2.12",
+  "audit.target.id": "/api/widgets",
+  "base": "testapp",
+  "body": {
+    "event": "policy.deny",
+    "id": "07515178-de2d-4ea3-9627-5b233351adda",
+    "n": 2
+  },
+  "severity": "UNDEFINED",
+  "timestamp": "2026-06-30T09:48:50.8789533Z"
+}
+done.

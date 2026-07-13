@@ -1,0 +1,6 @@
+﻿scenario=03-backend-503-intermittent
+started=2026-06-30T11:44:37.7415414+02:00
+sink_args=-reject-every 3 -reject-code 503
+testapp_args=-count 9 -interval 100ms
+otlp_endpoint=https://localhost:4310/v1/audit
+testapp_exit=0

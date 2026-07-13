@@ -13,12 +13,9 @@ Active design: sync collector ownership when reachable; SDK store-and-retry **on
 - [x] **Background HTTP retry** — stored batches re-queued with `RetryPolicy` backoff on HTTP 503/429 during background export
 - [x] **HTTP 503 ≠ offline** — reachable collector HTTP 503/429 on emit is not stored (`503 rejected`); transport failures on emit are stored (`503 stored`). Background export of stored records retries on HTTP 503/429 with backoff; `RemoveAll` only after HTTP 2xx. Emit-time HTTP errors are never persisted.
 - [x] **Export circuit after `MaxAttempts`** — circuit opens, resyncs store to queue after cooldown, and probes again without requiring process restart
+- [x] **Duplicate delivery at sink** — documented contract: collector/sink must dedupe on `audit.record.id`; SDK replay after `RemoveAll` failure or restart may resend the same ID
 
 ## P1 — accepted / deferred
-
-### Duplicate delivery at sink
-
-If export succeeds but `RemoveAll` fails, or the process restarts before compaction, replay may send the same `audit.record.id` again. **Deferred:** customer handles idempotency at collector/sink endpoints.
 
 ### In-memory default store
 
@@ -62,7 +59,7 @@ On transport failure the processor `Save`s to the store **and** clones into the 
 
 - [x] `AUDIT_LOG_README.md` — delivery + store removal contract updated
 - [x] `testlogs/README.md` — historical note clarified; scenario 09 as sync reference
-- [ ] Re-run `testlogs/run-e2e-scenarios.ps1` to refresh captured logs (still contain old `sync_direct` banner from pre-unified model)
+- [x] Re-run `testlogs/run-e2e-scenarios.ps1` to refresh captured logs (scenarios 01–09; requires Redis on `127.0.0.1:6379`)
 
 ### Exception handler vs emit status
 

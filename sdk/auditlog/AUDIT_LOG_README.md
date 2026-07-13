@@ -109,6 +109,16 @@ Available builder setters:
 
 Records are removed from `AuditLogStore` only after a successful export (`RemoveAll` on the exported batch).
 
+### Idempotency and duplicate delivery
+
+The SDK does **not** guarantee exactly-once delivery to the final sink. The same `audit.record.id` may be exported more than once when:
+
+- export succeeds but `RemoveAll` fails (`store_remove_failed`);
+- the process restarts before store compaction after a successful export;
+- the export circuit resyncs stored records and retries after `MaxAttempts`.
+
+**Contract:** collectors and audit sinks must treat `audit.record.id` as an idempotency key (dedupe on ingest, or accept silently without a second durable write). The SDK store-and-retry path is at-least-once to the collector; end-to-end exactly-once is owned by the sink layer.
+
 Use `-filestore` (or a durable store backend) when you need crash recovery; the in-memory default does not survive process restarts.
 
 Choose a storage backend when building the processor:
@@ -258,7 +268,7 @@ Processor-side failures are surfaced through `AuditExceptionHandler`. Each `Audi
 | `collector_rejected` | Collector returned an HTTP error on emit (not stored) |
 | `collector_unreachable_stored` | Transport failure; record saved for background retry |
 | `store_save_failed` | Could not persist record to the configured store |
-| `store_remove_failed` | Export succeeded but store compaction failed |
+| `store_remove_failed` | Export succeeded but store compaction failed; sink may already have the record — rely on sink idempotency on `audit.record.id` |
 | `export_retrying` | Background export failed; retry scheduled |
 | `export_max_attempts_exceeded` | Retry budget exhausted for the current circuit cycle |
 | `export_circuit_open` | Export circuit open; stored records will be resynced after cooldown |

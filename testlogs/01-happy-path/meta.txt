@@ -1,0 +1,6 @@
+﻿scenario=01-happy-path
+started=2026-06-30T11:43:35.0119927+02:00
+sink_args=-reject-every 0
+testapp_args=-count 5 -quiet
+otlp_endpoint=https://localhost:4310/v1/audit
+testapp_exit=0
