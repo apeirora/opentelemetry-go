@@ -25,6 +25,7 @@ import (
 	"go.opentelemetry.io/otel/exporters/otlp/otlptrace"
 	"go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracehttp/internal"
 	"go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracehttp/internal/counter"
+	"go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracehttp/internal/failover"
 	"go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracehttp/internal/observ"
 	"go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracehttp/internal/otlpconfig"
 	"go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracehttp/internal/retry"
@@ -172,13 +173,34 @@ func (c *client) UploadTraces(ctx context.Context, protoSpans []*tracepb.Resourc
 		return fmt.Errorf("request body too large: exceeded %d bytes", maxSize)
 	}
 
-	request, err := c.newRequest(rawRequest)
+	var statusCode int
+	err = c.uploadTraces(ctx, c.cfg, rawRequest, protoSpans, &uploadErr, &statusCode)
+	if err == nil {
+		return nil
+	}
+	fallbackCfg, ok := otlpconfig.FallbackSignalConfig(c.cfg, otlpconfig.DefaultTracesPath)
+	if !ok || !failover.IsHTTPTransportError(err) {
+		return err
+	}
+	uploadErr = nil
+	statusCode = 0
+	return c.uploadTraces(ctx, fallbackCfg, rawRequest, protoSpans, &uploadErr, &statusCode)
+}
+
+func (c *client) uploadTraces(
+	ctx context.Context,
+	cfg otlpconfig.SignalConfig,
+	rawRequest []byte,
+	protoSpans []*tracepb.ResourceSpans,
+	uploadErr *error,
+	statusCode *int,
+) error {
+	request, err := c.newRequest(cfg, rawRequest)
 	if err != nil {
 		return err
 	}
 
-	var statusCode int
-	if c.inst != nil {
+	if c.inst != nil && cfg.Endpoint == c.cfg.Endpoint {
 		var spanCount int
 		for _, rs := range protoSpans {
 			for _, ss := range rs.ScopeSpans {
@@ -186,17 +208,17 @@ func (c *client) UploadTraces(ctx context.Context, protoSpans []*tracepb.Resourc
 			}
 		}
 		op := c.inst.ExportSpans(ctx, spanCount)
-		defer func() { op.End(uploadErr, statusCode) }()
+		defer func() { op.End(*uploadErr, *statusCode) }()
 	}
 
-	return errors.Join(uploadErr, c.requestFunc(ctx, func(ctx context.Context) error {
+	retErr := c.requestFunc(ctx, func(ctx context.Context) error {
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
 		default:
 		}
 
-		statusCode = 0
+		*statusCode = 0
 		request.reset(ctx)
 		// nolint:gosec // URL is constructed from validated OTLP endpoint configuration
 		resp, err := c.client.Do(request.Request)
@@ -211,13 +233,13 @@ func (c *client) UploadTraces(ctx context.Context, protoSpans []*tracepb.Resourc
 		if resp != nil && resp.Body != nil {
 			defer func() {
 				if err := resp.Body.Close(); err != nil {
-					uploadErr = errors.Join(uploadErr, err)
+					*uploadErr = errors.Join(*uploadErr, err)
 				}
 			}()
 		}
 
-		statusCode = resp.StatusCode
-		if statusCode >= 200 && statusCode <= 299 {
+		*statusCode = resp.StatusCode
+		if *statusCode >= 200 && *statusCode <= 299 {
 			// Success, do not retry.
 			// Read the partial success message, if any.
 			var respData bytes.Buffer
@@ -243,7 +265,7 @@ func (c *client) UploadTraces(ctx context.Context, protoSpans []*tracepb.Resourc
 					n := respProto.PartialSuccess.GetRejectedSpans()
 					if n != 0 || msg != "" {
 						err := internal.TracePartialSuccessError(n, msg)
-						uploadErr = errors.Join(uploadErr, err)
+						*uploadErr = errors.Join(*uploadErr, err)
 					}
 				}
 			}
@@ -269,7 +291,7 @@ func (c *client) UploadTraces(ctx context.Context, protoSpans []*tracepb.Resourc
 		}
 		bodyErr := fmt.Errorf("body: %s", respStr)
 
-		switch statusCode {
+		switch *statusCode {
 		case http.StatusTooManyRequests,
 			http.StatusBadGateway,
 			http.StatusServiceUnavailable,
@@ -280,11 +302,14 @@ func (c *client) UploadTraces(ctx context.Context, protoSpans []*tracepb.Resourc
 			// Non-retryable failure.
 			return fmt.Errorf("failed to send to %s: %s (%w)", request.URL, resp.Status, bodyErr)
 		}
-	}))
+	})
+	finalErr := errors.Join(*uploadErr, retErr)
+	*uploadErr = finalErr
+	return finalErr
 }
 
-func (c *client) newRequest(body []byte) (request, error) {
-	u := url.URL{Scheme: c.getScheme(), Host: c.cfg.Endpoint, Path: c.cfg.URLPath}
+func (c *client) newRequest(cfg otlpconfig.SignalConfig, body []byte) (request, error) {
+	u := url.URL{Scheme: getScheme(cfg), Host: cfg.Endpoint, Path: cfg.URLPath}
 	r, err := http.NewRequestWithContext(context.Background(), http.MethodPost, u.String(), http.NoBody)
 	if err != nil {
 		return request{Request: r}, err
@@ -293,13 +318,13 @@ func (c *client) newRequest(body []byte) (request, error) {
 	userAgent := "OTel OTLP Exporter Go/" + otlptrace.Version()
 	r.Header.Set("User-Agent", userAgent)
 
-	for k, v := range c.cfg.Headers {
+	for k, v := range cfg.Headers {
 		r.Header.Set(k, v)
 	}
 	r.Header.Set("Content-Type", contentTypeProto)
 
 	req := request{Request: r}
-	switch Compression(c.cfg.Compression) {
+	switch Compression(cfg.Compression) {
 	case NoCompression:
 		r.ContentLength = int64(len(body))
 		req.bodyReader = bodyReader(body)
@@ -449,8 +474,8 @@ func evaluate(err error) (bool, time.Duration) {
 	return true, rErr.throttle
 }
 
-func (c *client) getScheme() string {
-	if c.cfg.Insecure {
+func getScheme(cfg otlpconfig.SignalConfig) string {
+	if cfg.Insecure {
 		return "http"
 	}
 	return "https"

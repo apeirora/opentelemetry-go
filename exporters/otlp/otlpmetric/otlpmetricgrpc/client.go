@@ -19,23 +19,26 @@ import (
 	"google.golang.org/protobuf/proto"
 
 	"go.opentelemetry.io/otel/exporters/otlp/otlpmetric/otlpmetricgrpc/internal"
+	"go.opentelemetry.io/otel/exporters/otlp/otlpmetric/otlpmetricgrpc/internal/failover"
 	"go.opentelemetry.io/otel/exporters/otlp/otlpmetric/otlpmetricgrpc/internal/oconf"
 	"go.opentelemetry.io/otel/exporters/otlp/otlpmetric/otlpmetricgrpc/internal/retry"
 )
 
 type client struct {
-	metadata       metadata.MD
-	exportTimeout  time.Duration
-	maxRequestSize int
-	requestFunc    retry.RequestFunc
+	metadata         metadata.MD
+	exportTimeout    time.Duration
+	maxRequestSize   int
+	requestFunc      retry.RequestFunc
+	fallbackEndpoint string
+	dialOpts         []grpc.DialOption
 
-	// ourConn keeps track of where conn was created: true if created here in
-	// NewClient, or false if passed with an option. This is important on
-	// Shutdown as the conn should only be closed if we created it. Otherwise,
-	// it is up to the processes that passed the conn to close it.
 	ourConn bool
 	conn    *grpc.ClientConn
 	msc     colmetricpb.MetricsServiceClient
+
+	ourFallbackConn bool
+	fallbackConn    *grpc.ClientConn
+	fallbackMsc     colmetricpb.MetricsServiceClient
 }
 
 // newClient creates a new gRPC metric client.
@@ -45,6 +48,11 @@ func newClient(_ context.Context, cfg oconf.Config) (*client, error) {
 		maxRequestSize: cfg.Metrics.MaxRequestSize,
 		requestFunc:    cfg.RetryConfig.RequestFunc(retryable),
 		conn:           cfg.GRPCConn,
+		dialOpts:       cfg.DialOptions,
+	}
+
+	if fb, ok := oconf.FallbackSignalConfig(cfg.Metrics, oconf.DefaultMetricsPath); ok {
+		c.fallbackEndpoint = fb.Endpoint
 	}
 
 	if len(cfg.Metrics.Headers) > 0 {
@@ -96,6 +104,12 @@ func (c *client) Shutdown(ctx context.Context) error {
 			err = closeErr
 		}
 	}
+	if c.ourFallbackConn && c.fallbackConn != nil {
+		closeErr := c.fallbackConn.Close()
+		if err == nil && closeErr != nil {
+			err = closeErr
+		}
+	}
 	c.conn = nil
 	return err
 }
@@ -126,23 +140,57 @@ func (c *client) UploadMetrics(ctx context.Context, protoMetrics *metricpb.Resou
 		return fmt.Errorf("request message too large: exceeded %d bytes", maxSize)
 	}
 
-	return errors.Join(uploadErr, c.requestFunc(ctx, func(iCtx context.Context) error {
-		resp, err := c.msc.Export(iCtx, pbRequest)
+	err := c.export(ctx, c.msc, pbRequest, &uploadErr)
+	if err == nil {
+		return uploadErr
+	}
+	if c.fallbackEndpoint == "" || !failover.IsGRPCTransportError(err) {
+		return err
+	}
+	if fbErr := c.ensureFallbackConn(); fbErr != nil {
+		return errors.Join(fbErr, uploadErr)
+	}
+	return c.export(ctx, c.fallbackMsc, pbRequest, &uploadErr)
+}
+
+func (c *client) ensureFallbackConn() error {
+	if c.fallbackMsc != nil {
+		return nil
+	}
+	userAgent := "OTel Go OTLP over gRPC metrics exporter/" + Version()
+	dialOpts := []grpc.DialOption{grpc.WithUserAgent(userAgent)}
+	dialOpts = append(dialOpts, c.dialOpts...)
+	conn, err := grpc.NewClient(c.fallbackEndpoint, dialOpts...)
+	if err != nil {
+		return err
+	}
+	c.ourFallbackConn = true
+	c.fallbackConn = conn
+	c.fallbackMsc = colmetricpb.NewMetricsServiceClient(conn)
+	return nil
+}
+
+func (c *client) export(
+	ctx context.Context,
+	msc colmetricpb.MetricsServiceClient,
+	pbRequest *colmetricpb.ExportMetricsServiceRequest,
+	uploadErr *error,
+) error {
+	return c.requestFunc(ctx, func(iCtx context.Context) error {
+		resp, err := msc.Export(iCtx, pbRequest)
 		if resp != nil && resp.PartialSuccess != nil {
 			msg := resp.PartialSuccess.GetErrorMessage()
 			n := resp.PartialSuccess.GetRejectedDataPoints()
 			if n != 0 || msg != "" {
 				e := internal.MetricPartialSuccessError(n, msg)
-				uploadErr = errors.Join(uploadErr, e)
+				*uploadErr = errors.Join(*uploadErr, e)
 			}
 		}
-		// nil is converted to OK.
 		if status.Code(err) == codes.OK {
-			// Success.
-			return nil
+			return *uploadErr
 		}
-		return err
-	}))
+		return errors.Join(*uploadErr, err)
+	})
 }
 
 // exportContext returns a copy of parent with an appropriate deadline and

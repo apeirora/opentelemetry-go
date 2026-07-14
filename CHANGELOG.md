@@ -10,6 +10,7 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ### Added
 
+- Add fallback endpoint support for OTLP exporters in `go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracegrpc`, `go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracehttp`, `go.opentelemetry.io/otel/exporters/otlp/otlpmetric/otlpmetricgrpc`, `go.opentelemetry.io/otel/exporters/otlp/otlpmetric/otlpmetrichttp`, `go.opentelemetry.io/otel/exporters/otlp/otlplog/otlploggrpc`, and `go.opentelemetry.io/otel/exporters/otlp/otlplog/otlploghttp`. When the primary endpoint fails with a transport error after retries are exhausted, exporters attempt the configured fallback endpoint using the same retry policy. Configure via `OTEL_EXPORTER_OTLP_FALLBACK_ENDPOINT`, signal-specific `OTEL_EXPORTER_OTLP_<SIGNAL>_FALLBACK_ENDPOINT` environment variables, or `WithFallbackEndpoint`/`WithFallbackEndpointURL` options.
 - Add `WithoutPanicRecording` TracerProvider option in `go.opentelemetry.io/otel/sdk/trace` to disable exception event recording for panics. (#8532)
 - Add `Map` and `MapValue` functions for new `MAP` attribute type in `go.opentelemetry.io/otel/attribute`. (#8445)
 - Support `MAP` attributes in `go.opentelemetry.io/otel/exporters/otlp/otlptrace`. (#8453)

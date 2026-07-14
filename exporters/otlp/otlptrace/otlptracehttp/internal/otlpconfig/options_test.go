@@ -270,6 +270,59 @@ func TestConfigs(t *testing.T) {
 			},
 		},
 
+		// Fallback endpoint tests
+		{
+			name: "Test With Fallback Endpoint",
+			opts: []GenericOption{
+				WithFallbackEndpoint("fallback:4318"),
+			},
+			asserts: func(t *testing.T, c *Config, grpcOption bool) { //nolint:revive // interface compliance
+				assert.Equal(t, "fallback:4318", c.Traces.FallbackEndpoint)
+			},
+		},
+		{
+			name: "Test With Fallback Endpoint URL",
+			opts: []GenericOption{
+				WithFallbackEndpointURL("http://fallback:4318/fallback/path"),
+			},
+			asserts: func(t *testing.T, c *Config, grpcOption bool) { //nolint:revive // interface compliance
+				assert.Equal(t, "fallback:4318", c.Traces.FallbackEndpoint)
+				assert.True(t, c.Traces.FallbackInsecureSet)
+				assert.True(t, c.Traces.FallbackInsecure)
+				if !grpcOption {
+					assert.Equal(t, "/fallback/path", c.Traces.FallbackURLPath)
+				}
+			},
+		},
+		{
+			name: "Test Environment Fallback Endpoint",
+			env: map[string]string{
+				"OTEL_EXPORTER_OTLP_FALLBACK_ENDPOINT": "http://fallback:4318",
+			},
+			asserts: func(t *testing.T, c *Config, grpcOption bool) { //nolint:revive // interface compliance
+				assert.Equal(t, "fallback:4318", c.Traces.FallbackEndpoint)
+				if !grpcOption {
+					assert.True(t, c.Traces.FallbackInsecure)
+					assert.Equal(t, "/v1/traces", c.Traces.FallbackURLPath)
+				}
+			},
+		},
+		{
+			name: "Test Environment Traces Fallback Endpoint",
+			env: map[string]string{
+				"OTEL_EXPORTER_OTLP_TRACES_FALLBACK_ENDPOINT": "https://fallback.traces:4318/custom",
+			},
+			asserts: func(t *testing.T, c *Config, grpcOption bool) { //nolint:revive // interface compliance
+				if grpcOption {
+					assert.Equal(t, "fallback.traces:4318/custom", c.Traces.FallbackEndpoint)
+				} else {
+					assert.Equal(t, "fallback.traces:4318", c.Traces.FallbackEndpoint)
+					assert.False(t, c.Traces.FallbackInsecure)
+					assert.Equal(t, "/custom", c.Traces.FallbackURLPath)
+				}
+			},
+		},
+
 		// Certificate tests
 		{
 			name: "Test Default Certificate",

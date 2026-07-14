@@ -24,6 +24,7 @@ import (
 
 	"go.opentelemetry.io/otel/exporters/otlp/otlpmetric/otlpmetrichttp/internal"
 	"go.opentelemetry.io/otel/exporters/otlp/otlpmetric/otlpmetrichttp/internal/counter"
+	"go.opentelemetry.io/otel/exporters/otlp/otlpmetric/otlpmetrichttp/internal/failover"
 	"go.opentelemetry.io/otel/exporters/otlp/otlpmetric/otlpmetrichttp/internal/observ"
 	"go.opentelemetry.io/otel/exporters/otlp/otlpmetric/otlpmetrichttp/internal/oconf"
 	"go.opentelemetry.io/otel/exporters/otlp/otlpmetric/otlpmetrichttp/internal/retry"
@@ -32,6 +33,7 @@ import (
 type client struct {
 	// req is cloned for every upload the client makes.
 	req            *http.Request
+	fallbackReq    *http.Request
 	compression    Compression
 	maxRequestSize int
 	requestFunc    retry.RequestFunc
@@ -92,15 +94,40 @@ func newClient(cfg oconf.Config) (*client, error) {
 		}
 	}
 
+	req, err := newHTTPRequest(cfg.Metrics, cfg.Metrics.Headers)
+	if err != nil {
+		return nil, err
+	}
+
+	inst, err := observ.NewInstrumentation(counter.NextExporterID(), cfg.Metrics.Endpoint)
+
+	c := &client{
+		compression:    Compression(cfg.Metrics.Compression),
+		maxRequestSize: cfg.Metrics.MaxRequestSize,
+		req:            req,
+		requestFunc:    cfg.RetryConfig.RequestFunc(evaluate),
+		httpClient:     httpClient,
+		inst:           inst,
+	}
+	if fb, ok := oconf.FallbackSignalConfig(cfg.Metrics, oconf.DefaultMetricsPath); ok {
+		fbReq, fbErr := newHTTPRequest(fb, cfg.Metrics.Headers)
+		if fbErr != nil {
+			return nil, fbErr
+		}
+		c.fallbackReq = fbReq
+	}
+	return c, err
+}
+
+func newHTTPRequest(metrics oconf.SignalConfig, headers map[string]string) (*http.Request, error) {
 	u := &url.URL{
 		Scheme: "https",
-		Host:   cfg.Metrics.Endpoint,
-		Path:   cfg.Metrics.URLPath,
+		Host:   metrics.Endpoint,
+		Path:   metrics.URLPath,
 	}
-	if cfg.Metrics.Insecure {
+	if metrics.Insecure {
 		u.Scheme = "http"
 	}
-	// Body is set when this is cloned during upload.
 	req, err := http.NewRequestWithContext(context.Background(), http.MethodPost, u.String(), http.NoBody)
 	if err != nil {
 		return nil, err
@@ -109,24 +136,13 @@ func newClient(cfg oconf.Config) (*client, error) {
 	userAgent := "OTel Go OTLP over HTTP/protobuf metrics exporter/" + Version()
 	req.Header.Set("User-Agent", userAgent)
 
-	if n := len(cfg.Metrics.Headers); n > 0 {
-		for k, v := range cfg.Metrics.Headers {
+	if n := len(headers); n > 0 {
+		for k, v := range headers {
 			req.Header.Set(k, v)
 		}
 	}
 	req.Header.Set("Content-Type", "application/x-protobuf")
-
-	// Initialize the instrumentation.
-	inst, err := observ.NewInstrumentation(counter.NextExporterID(), cfg.Metrics.Endpoint)
-
-	return &client{
-		compression:    Compression(cfg.Metrics.Compression),
-		maxRequestSize: cfg.Metrics.MaxRequestSize,
-		req:            req,
-		requestFunc:    cfg.RetryConfig.RequestFunc(evaluate),
-		httpClient:     httpClient,
-		inst:           inst,
-	}, err
+	return req, nil
 }
 
 // Shutdown shuts down the client, freeing all resources.
@@ -159,25 +175,46 @@ func (c *client) UploadMetrics(ctx context.Context, protoMetrics *metricpb.Resou
 	if maxSize := c.maxRequestSize; maxSize > 0 && len(body) > maxSize {
 		return fmt.Errorf("request body too large: exceeded %d bytes", maxSize)
 	}
-	request, err := c.newRequest(ctx, body)
+
+	var statusCode int
+	err = c.uploadMetrics(ctx, c.req, body, protoMetrics, &uploadErr, &statusCode)
+	if err == nil {
+		return nil
+	}
+	if c.fallbackReq == nil || !failover.IsHTTPTransportError(err) {
+		return err
+	}
+	uploadErr = nil
+	statusCode = 0
+	return c.uploadMetrics(ctx, c.fallbackReq, body, protoMetrics, &uploadErr, &statusCode)
+}
+
+func (c *client) uploadMetrics(
+	ctx context.Context,
+	reqTemplate *http.Request,
+	body []byte,
+	protoMetrics *metricpb.ResourceMetrics,
+	uploadErr *error,
+	statusCode *int,
+) error {
+	request, err := c.newRequest(ctx, reqTemplate, body)
 	if err != nil {
 		return err
 	}
 
-	var statusCode int
-	if c.inst != nil {
+	if c.inst != nil && reqTemplate == c.req {
 		op := c.inst.ExportMetrics(ctx, protoMetrics)
-		defer func() { op.End(uploadErr, statusCode) }()
+		defer func() { op.End(*uploadErr, *statusCode) }()
 	}
 
-	return errors.Join(uploadErr, c.requestFunc(ctx, func(iCtx context.Context) error {
+	retErr := c.requestFunc(ctx, func(iCtx context.Context) error {
 		select {
 		case <-iCtx.Done():
 			return iCtx.Err()
 		default:
 		}
 
-		statusCode = 0
+		*statusCode = 0
 		request.reset(iCtx)
 		// nolint:gosec // URL is constructed from validated OTLP endpoint configuration
 		resp, err := c.httpClient.Do(request.Request)
@@ -189,17 +226,17 @@ func (c *client) UploadMetrics(ctx context.Context, protoMetrics *metricpb.Resou
 			return err
 		}
 		if resp != nil {
-			statusCode = resp.StatusCode
+			*statusCode = resp.StatusCode
 			if resp.Body != nil {
 				defer func() {
 					if err := resp.Body.Close(); err != nil {
-						uploadErr = errors.Join(uploadErr, err)
+						*uploadErr = errors.Join(*uploadErr, err)
 					}
 				}()
 			}
 		}
 
-		if statusCode >= 200 && statusCode <= 299 {
+		if *statusCode >= 200 && *statusCode <= 299 {
 			// Success, do not retry.
 
 			// Read the partial success message, if any.
@@ -226,7 +263,7 @@ func (c *client) UploadMetrics(ctx context.Context, protoMetrics *metricpb.Resou
 					n := respProto.PartialSuccess.GetRejectedDataPoints()
 					if n != 0 || msg != "" {
 						err := internal.MetricPartialSuccessError(n, msg)
-						uploadErr = errors.Join(uploadErr, err)
+						*uploadErr = errors.Join(*uploadErr, err)
 					}
 				}
 			}
@@ -263,7 +300,10 @@ func (c *client) UploadMetrics(ctx context.Context, protoMetrics *metricpb.Resou
 			// Non-retryable failure.
 			return fmt.Errorf("failed to send metrics to %s: %s (%w)", request.URL, resp.Status, bodyErr)
 		}
-	}))
+	})
+	finalErr := errors.Join(*uploadErr, retErr)
+	*uploadErr = finalErr
+	return finalErr
 }
 
 var gzPool = sync.Pool{
@@ -273,8 +313,8 @@ var gzPool = sync.Pool{
 	},
 }
 
-func (c *client) newRequest(ctx context.Context, body []byte) (request, error) {
-	r := c.req.Clone(ctx)
+func (c *client) newRequest(ctx context.Context, reqTemplate *http.Request, body []byte) (request, error) {
+	r := reqTemplate.Clone(ctx)
 	req := request{Request: r}
 
 	switch c.compression {

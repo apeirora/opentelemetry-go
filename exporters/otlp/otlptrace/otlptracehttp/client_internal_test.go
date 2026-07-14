@@ -5,12 +5,18 @@ package otlptracehttp
 
 import (
 	"bytes"
+	"context"
+	"fmt"
+	"net"
 	"net/http"
+	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/go-logr/logr/funcr"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestRetryAfterUsesSeconds(t *testing.T) {
@@ -48,4 +54,31 @@ func TestClientMarshalLogDoesNotIncludeEndpointConfig(t *testing.T) {
 	assert.Contains(t, logged, "otlptracehttp")
 	assert.NotContains(t, logged, sensitiveEndpoint)
 	assert.NotContains(t, logged, "Insecure")
+}
+
+func TestUploadTracesFailoverInternal(t *testing.T) {
+	ln, err := net.Listen("tcp", "localhost:0")
+	require.NoError(t, err)
+	_, portStr, err := net.SplitHostPort(ln.Addr().String())
+	require.NoError(t, err)
+	require.NoError(t, ln.Close())
+
+	fallback := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	t.Cleanup(fallback.Close)
+
+	fallbackHost := strings.TrimPrefix(fallback.URL, "http://")
+	deadEndpoint := fmt.Sprintf("localhost:%s", portStr)
+
+	c := NewClient(
+		WithEndpoint(deadEndpoint),
+		WithFallbackEndpoint(fallbackHost),
+		WithInsecure(),
+		WithRetry(RetryConfig{Enabled: false}),
+	).(*client)
+
+	ctx := context.Background()
+	err = c.UploadTraces(ctx, nil)
+	assert.NoError(t, err)
 }

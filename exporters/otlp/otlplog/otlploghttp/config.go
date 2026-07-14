@@ -78,6 +78,13 @@ var (
 			"OTEL_EXPORTER_OTLP_CLIENT_KEY",
 		},
 	}
+
+	envFallbackEndpoint = []string{
+		"OTEL_EXPORTER_OTLP_LOGS_FALLBACK_ENDPOINT",
+		"OTEL_EXPORTER_OTLP_FALLBACK_ENDPOINT",
+	}
+	envFallbackPathSignal = []string{"OTEL_EXPORTER_OTLP_LOGS_FALLBACK_ENDPOINT"}
+	envFallbackPathOTLP   = []string{"OTEL_EXPORTER_OTLP_FALLBACK_ENDPOINT"}
 )
 
 // Option applies an option to the Exporter.
@@ -101,6 +108,12 @@ type config struct {
 	proxy          setting[HTTPTransportProxyFunc]
 	retryCfg       setting[retry.Config]
 	httpClient     *http.Client
+
+	fallbackEndpoint       setting[string]
+	fallbackPath           setting[string]
+	fallbackInsecure       setting[bool]
+	fallbackPathFromURL    bool
+	fallbackInsecureForced bool
 }
 
 func newConfig(options []Option) config {
@@ -145,7 +158,34 @@ func newConfig(options []Option) config {
 		fallback[retry.Config](defaultRetryCfg),
 	)
 
+	c.fallbackEndpoint = c.fallbackEndpoint.Resolve(
+		getenv[string](envFallbackEndpoint, convEndpoint),
+	)
+	c.fallbackPath = c.fallbackPath.Resolve(
+		getenv[string](envFallbackPathSignal, convPathExact),
+		getenv[string](envFallbackPathOTLP, convPath),
+	)
+	c.fallbackInsecure = c.fallbackInsecure.Resolve(
+		loadInsecureFromEnvEndpoint(envFallbackEndpoint),
+	)
+
 	return c
+}
+
+func (c config) fallbackEndpointConfig() (endpoint, path string, insecure bool, ok bool) {
+	if !c.fallbackEndpoint.Set || c.fallbackEndpoint.Value == "" {
+		return "", "", false, false
+	}
+	endpoint = c.fallbackEndpoint.Value
+	path = c.path.Value
+	if c.fallbackPath.Set {
+		path = c.fallbackPath.Value
+	}
+	insecure = c.insecure.Value
+	if c.fallbackInsecureForced || c.fallbackInsecure.Set {
+		insecure = c.fallbackInsecure.Value
+	}
+	return endpoint, path, insecure, true
 }
 
 // WithEndpoint sets the target endpoint the Exporter will connect to. This
@@ -383,6 +423,34 @@ func WithHTTPClient(c *http.Client) Option {
 	return fnOpt(func(cfg config) config {
 		cfg.httpClient = c
 		return cfg
+	})
+}
+
+// WithFallbackEndpoint sets a fallback endpoint (host and port only) used when
+// the primary endpoint fails with a transport error after retries are exhausted.
+func WithFallbackEndpoint(endpoint string) Option {
+	return fnOpt(func(c config) config {
+		c.fallbackEndpoint = newSetting(endpoint)
+		return c
+	})
+}
+
+// WithFallbackEndpointURL sets a fallback endpoint URL (scheme, host, port, path)
+// used when the primary endpoint fails with a transport error after retries are
+// exhausted.
+func WithFallbackEndpointURL(rawURL string) Option {
+	u, err := url.Parse(rawURL)
+	if err != nil {
+		global.Error(err, "otlplog: parse fallback endpoint url", "url", rawURL)
+		return fnOpt(func(c config) config { return c })
+	}
+	return fnOpt(func(c config) config {
+		c.fallbackEndpoint = newSetting(u.Host)
+		c.fallbackPath = newSetting(u.Path)
+		c.fallbackPathFromURL = true
+		c.fallbackInsecure = insecureFromScheme(c.fallbackInsecure, u.Scheme)
+		c.fallbackInsecureForced = true
+		return c
 	})
 }
 

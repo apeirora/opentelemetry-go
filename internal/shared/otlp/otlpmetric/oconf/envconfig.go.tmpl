@@ -104,6 +104,12 @@ func getOptionsFromEnv() []GenericOption {
 		WithEnvCompression("METRICS_COMPRESSION", func(c Compression) { opts = append(opts, WithCompression(c)) }),
 		envconfig.WithDuration("TIMEOUT", func(d time.Duration) { opts = append(opts, WithTimeout(d)) }),
 		envconfig.WithDuration("METRICS_TIMEOUT", func(d time.Duration) { opts = append(opts, WithTimeout(d)) }),
+		envconfig.WithURL("FALLBACK_ENDPOINT", func(u *url.URL) {
+			opts = append(opts, withFallbackEndpoint(u, DefaultMetricsPath, false))
+		}),
+		envconfig.WithURL("METRICS_FALLBACK_ENDPOINT", func(u *url.URL) {
+			opts = append(opts, withFallbackEndpoint(u, DefaultMetricsPath, true))
+		}),
 		withEnvTemporalityPreference(
 			"METRICS_TEMPORALITY_PREFERENCE",
 			func(t metric.TemporalitySelector) { opts = append(opts, WithTemporalitySelector(t)) },
@@ -124,6 +130,36 @@ func withEndpointForGRPC(u *url.URL) func(cfg Config) Config {
 		cfg.Metrics.Endpoint = path.Join(u.Host, u.Path)
 		return cfg
 	}
+}
+
+func withFallbackEndpoint(u *url.URL, defaultPath string, perSignal bool) GenericOption {
+	return newSplitOption(
+		func(cfg Config) Config {
+			cfg.Metrics.FallbackEndpoint = u.Host
+			if perSignal {
+				path := u.Path
+				if path == "" {
+					path = "/"
+				}
+				cfg.Metrics.FallbackURLPath = path
+			} else {
+				cfg.Metrics.FallbackURLPath = path.Join(u.Path, defaultPath)
+			}
+			cfg.Metrics.FallbackURLPathFromURL = true
+			switch strings.ToLower(u.Scheme) {
+			case "http", "unix":
+				cfg.Metrics.FallbackInsecure = true
+			default:
+				cfg.Metrics.FallbackInsecure = false
+			}
+			cfg.Metrics.FallbackInsecureSet = true
+			return cfg
+		},
+		func(cfg Config) Config {
+			cfg.Metrics.FallbackEndpoint = path.Join(u.Host, u.Path)
+			return cfg
+		},
+	)
 }
 
 // WithEnvCompression retrieves the specified config and passes it to ConfigFn as a Compression.

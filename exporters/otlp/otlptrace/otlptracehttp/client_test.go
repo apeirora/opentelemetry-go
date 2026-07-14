@@ -11,9 +11,11 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -961,4 +963,99 @@ type roundTripperFunc func(*http.Request) (*http.Response, error)
 
 func (f roundTripperFunc) RoundTrip(r *http.Request) (*http.Response, error) {
 	return f(r)
+}
+
+func closedPort(tb testing.TB) int {
+	tb.Helper()
+	ln, err := (&net.ListenConfig{}).Listen(tb.Context(), "tcp", "localhost:0")
+	require.NoError(tb, err)
+	_, portStr, err := net.SplitHostPort(ln.Addr().String())
+	require.NoError(tb, err)
+	require.NoError(tb, ln.Close())
+	port, err := strconv.Atoi(portStr)
+	require.NoError(tb, err)
+	return port
+}
+
+func fastRetry() otlptracehttp.RetryConfig {
+	return otlptracehttp.RetryConfig{
+		Enabled:         true,
+		InitialInterval: time.Nanosecond,
+		MaxInterval:     time.Nanosecond,
+		MaxElapsedTime:  time.Millisecond,
+	}
+}
+
+func TestFallbackEndpoint(t *testing.T) {
+	t.Run("transport failure fails over to fallback", func(t *testing.T) {
+		fallback := runMockCollector(t, mockCollectorConfig{})
+		t.Cleanup(func() { _ = fallback.Stop() })
+
+		deadPort := closedPort(t)
+		client := otlptracehttp.NewClient(
+			otlptracehttp.WithEndpoint(fmt.Sprintf("localhost:%d", deadPort)),
+			otlptracehttp.WithFallbackEndpoint(fallback.Endpoint()),
+			otlptracehttp.WithInsecure(),
+			otlptracehttp.WithRetry(fastRetry()),
+		)
+		ctx := context.Background()
+		exporter, err := otlptrace.New(ctx, client)
+		require.NoError(t, err)
+		defer func() {
+			assert.NoError(t, exporter.Shutdown(ctx))
+		}()
+
+		require.NoError(t, exporter.ExportSpans(ctx, otlptracetest.SingleReadOnlySpan()))
+		assert.Len(t, fallback.GetSpans(), 1)
+	})
+
+	t.Run("primary success does not use fallback", func(t *testing.T) {
+		primary := runMockCollector(t, mockCollectorConfig{})
+		t.Cleanup(func() { _ = primary.Stop() })
+		fallback := runMockCollector(t, mockCollectorConfig{})
+		t.Cleanup(func() { _ = fallback.Stop() })
+
+		client := otlptracehttp.NewClient(
+			otlptracehttp.WithEndpoint(primary.Endpoint()),
+			otlptracehttp.WithFallbackEndpoint(fallback.Endpoint()),
+			otlptracehttp.WithInsecure(),
+			otlptracehttp.WithRetry(otlptracehttp.RetryConfig{Enabled: false}),
+		)
+		ctx := context.Background()
+		exporter, err := otlptrace.New(ctx, client)
+		require.NoError(t, err)
+		defer func() {
+			assert.NoError(t, exporter.Shutdown(ctx))
+		}()
+
+		require.NoError(t, exporter.ExportSpans(ctx, otlptracetest.SingleReadOnlySpan()))
+		assert.Len(t, primary.GetSpans(), 1)
+		assert.Empty(t, fallback.GetSpans())
+	})
+
+	t.Run("HTTP error does not fail over", func(t *testing.T) {
+		primary := runMockCollector(t, mockCollectorConfig{
+			InjectHTTPStatus: []int{http.StatusServiceUnavailable},
+		})
+		t.Cleanup(func() { _ = primary.Stop() })
+		fallback := runMockCollector(t, mockCollectorConfig{})
+		t.Cleanup(func() { _ = fallback.Stop() })
+
+		client := otlptracehttp.NewClient(
+			otlptracehttp.WithEndpoint(primary.Endpoint()),
+			otlptracehttp.WithFallbackEndpoint(fallback.Endpoint()),
+			otlptracehttp.WithInsecure(),
+			otlptracehttp.WithRetry(otlptracehttp.RetryConfig{Enabled: false}),
+		)
+		ctx := context.Background()
+		exporter, err := otlptrace.New(ctx, client)
+		require.NoError(t, err)
+		defer func() {
+			assert.NoError(t, exporter.Shutdown(ctx))
+		}()
+
+		err = exporter.ExportSpans(ctx, otlptracetest.SingleReadOnlySpan())
+		require.Error(t, err)
+		assert.Empty(t, fallback.GetSpans())
+	})
 }

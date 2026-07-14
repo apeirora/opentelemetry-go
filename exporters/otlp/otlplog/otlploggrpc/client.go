@@ -24,24 +24,27 @@ import (
 	"google.golang.org/protobuf/proto"
 
 	"go.opentelemetry.io/otel/exporters/otlp/otlplog/otlploggrpc/internal"
+	"go.opentelemetry.io/otel/exporters/otlp/otlplog/otlploggrpc/internal/failover"
 	"go.opentelemetry.io/otel/exporters/otlp/otlplog/otlploggrpc/internal/observ"
 	"go.opentelemetry.io/otel/exporters/otlp/otlplog/otlploggrpc/internal/retry"
 )
 
 // The methods of this type are not expected to be called concurrently.
 type client struct {
-	metadata       metadata.MD
-	exportTimeout  time.Duration
-	maxRequestSize int
-	requestFunc    retry.RequestFunc
+	metadata         metadata.MD
+	exportTimeout    time.Duration
+	maxRequestSize   int
+	requestFunc      retry.RequestFunc
+	fallbackEndpoint string
+	dialOpts         []grpc.DialOption
 
-	// ourConn keeps track of where conn was created: true if created here in
-	// NewClient, or false if passed with an option. This is important on
-	// Shutdown as conn should only be closed if we created it. Otherwise,
-	// it is up to the processes that passed conn to close it.
 	ourConn bool
 	conn    *grpc.ClientConn
 	lsc     collogpb.LogsServiceClient
+
+	ourFallbackConn bool
+	fallbackConn    *grpc.ClientConn
+	fallbackLsc     collogpb.LogsServiceClient
 
 	instrumentation *observ.Instrumentation
 }
@@ -57,17 +60,17 @@ func newClient(cfg config) (*client, error) {
 		requestFunc:    cfg.retryCfg.Value.RequestFunc(retryable),
 		conn:           cfg.gRPCConn.Value,
 	}
+	if cfg.fallbackEndpoint.Set {
+		c.fallbackEndpoint = cfg.fallbackEndpoint.Value
+	}
 
 	if len(cfg.headers.Value) > 0 {
 		c.metadata = metadata.New(cfg.headers.Value)
 	}
 
+	c.dialOpts = newGRPCDialOptions(cfg)
 	if c.conn == nil {
-		// If the caller did not provide a ClientConn when the client was
-		// created, create one using the configuration they did provide.
-		dialOpts := newGRPCDialOptions(cfg)
-
-		conn, err := newGRPCClientFn(cfg.endpoint.Value, dialOpts...)
+		conn, err := newGRPCClientFn(cfg.endpoint.Value, c.dialOpts...)
 		if err != nil {
 			return nil, err
 		}
@@ -168,23 +171,54 @@ func (c *client) UploadLogs(ctx context.Context, rl []*logpb.ResourceLogs) (uplo
 		return fmt.Errorf("request message too large: exceeded %d bytes", maxSize)
 	}
 
-	return errors.Join(uploadErr, c.requestFunc(ctx, func(ctx context.Context) error {
-		resp, err := c.lsc.Export(ctx, pbRequest)
+	err := c.export(ctx, c.lsc, pbRequest, &uploadErr)
+	if err == nil {
+		return uploadErr
+	}
+	if c.fallbackEndpoint == "" || !failover.IsGRPCTransportError(err) {
+		return err
+	}
+	if fbErr := c.ensureFallbackConn(); fbErr != nil {
+		return errors.Join(fbErr, uploadErr)
+	}
+	return c.export(ctx, c.fallbackLsc, pbRequest, &uploadErr)
+}
+
+func (c *client) ensureFallbackConn() error {
+	if c.fallbackLsc != nil {
+		return nil
+	}
+	conn, err := newGRPCClientFn(c.fallbackEndpoint, c.dialOpts...)
+	if err != nil {
+		return err
+	}
+	c.ourFallbackConn = true
+	c.fallbackConn = conn
+	c.fallbackLsc = collogpb.NewLogsServiceClient(conn)
+	return nil
+}
+
+func (c *client) export(
+	ctx context.Context,
+	lsc collogpb.LogsServiceClient,
+	pbRequest *collogpb.ExportLogsServiceRequest,
+	uploadErr *error,
+) error {
+	return c.requestFunc(ctx, func(ctx context.Context) error {
+		resp, err := lsc.Export(ctx, pbRequest)
 		if resp != nil && resp.PartialSuccess != nil {
 			msg := resp.PartialSuccess.GetErrorMessage()
 			n := resp.PartialSuccess.GetRejectedLogRecords()
 			if n != 0 || msg != "" {
 				err := internal.LogPartialSuccessError(n, msg)
-				uploadErr = errors.Join(uploadErr, err)
+				*uploadErr = errors.Join(*uploadErr, err)
 			}
 		}
-		// nil is converted to OK.
 		if status.Code(err) == codes.OK {
-			// Success.
-			return nil
+			return *uploadErr
 		}
-		return err
-	}))
+		return errors.Join(*uploadErr, err)
+	})
 }
 
 // Shutdown shuts down the client, freeing all resources.
@@ -206,7 +240,12 @@ func (c *client) Shutdown(ctx context.Context) error {
 	err := ctx.Err()
 	if c.ourConn {
 		closeErr := c.conn.Close()
-		// A context timeout error takes precedence over this error.
+		if err == nil && closeErr != nil {
+			err = closeErr
+		}
+	}
+	if c.ourFallbackConn && c.fallbackConn != nil {
+		closeErr := c.fallbackConn.Close()
 		if err == nil && closeErr != nil {
 			err = closeErr
 		}

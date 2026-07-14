@@ -13,6 +13,9 @@ package internal
 //go:generate gotmpl --body=../../../../../internal/shared/otlp/retry/retry.go.tmpl "--data={}" --out=retry/retry.go
 //go:generate gotmpl --body=../../../../../internal/shared/otlp/retry/retry_test.go.tmpl "--data={}" --out=retry/retry_test.go
 
+//go:generate gotmpl --body=../../../../../internal/shared/otlp/failover/failover.go.tmpl "--data={}" --out=failover/failover.go
+//go:generate gotmpl --body=../../../../../internal/shared/otlp/failover/failover_test.go.tmpl "--data={}" --out=failover/failover_test.go
+
 //go:generate gotmpl --body=../../../../../internal/shared/otlp/envconfig/envconfig.go.tmpl "--data={}" --out=envconfig/envconfig.go
 //go:generate gotmpl --body=../../../../../internal/shared/otlp/envconfig/envconfig_test.go.tmpl "--data={}" --out=envconfig/envconfig_test.go
 

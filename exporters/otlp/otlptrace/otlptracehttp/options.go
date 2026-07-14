@@ -184,3 +184,16 @@ func WithProxy(pf HTTPTransportProxyFunc) Option {
 func WithHTTPClient(c *http.Client) Option {
 	return wrappedOption{otlpconfig.WithHTTPClient(c)}
 }
+
+// WithFallbackEndpoint sets a fallback endpoint (host and port only) used when
+// the primary endpoint fails with a transport error after retries are exhausted.
+func WithFallbackEndpoint(endpoint string) Option {
+	return wrappedOption{otlpconfig.WithFallbackEndpoint(endpoint)}
+}
+
+// WithFallbackEndpointURL sets a fallback endpoint URL (scheme, host, port, path)
+// used when the primary endpoint fails with a transport error after retries are
+// exhausted.
+func WithFallbackEndpointURL(u string) Option {
+	return wrappedOption{otlpconfig.WithFallbackEndpointURL(u)}
+}

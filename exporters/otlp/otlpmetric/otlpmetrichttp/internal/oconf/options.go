@@ -61,6 +61,12 @@ type (
 		Timeout        time.Duration
 		URLPath        string
 
+		FallbackEndpoint       string
+		FallbackURLPath        string
+		FallbackInsecure       bool
+		FallbackInsecureSet    bool
+		FallbackURLPathFromURL bool
+
 		TemporalitySelector metric.TemporalitySelector
 		AggregationSelector metric.AggregationSelector
 
@@ -398,4 +404,66 @@ func WithHTTPClient(c *http.Client) GenericOption {
 		cfg.Metrics.HTTPClient = c
 		return cfg
 	})
+}
+
+// WithFallbackEndpoint configures a fallback endpoint (host and port only) to
+// use when the primary endpoint fails with a transport error after retries are
+// exhausted. The fallback uses the same URL path and security settings as the
+// primary endpoint unless overridden by WithFallbackEndpointURL.
+func WithFallbackEndpoint(endpoint string) GenericOption {
+	return newGenericOption(func(cfg Config) Config {
+		cfg.Metrics.FallbackEndpoint = endpoint
+		return cfg
+	})
+}
+
+// WithFallbackEndpointURL configures a fallback endpoint URL (scheme, host,
+// port, path) to use when the primary endpoint fails with a transport error
+// after retries are exhausted.
+func WithFallbackEndpointURL(v string) GenericOption {
+	return newGenericOption(func(cfg Config) Config {
+		u, err := url.Parse(v)
+		if err != nil {
+			global.Error(err, "otlpmetric: parse fallback endpoint url", "url", v)
+			return cfg
+		}
+
+		cfg.Metrics.FallbackEndpoint = u.Host
+		cfg.Metrics.FallbackURLPath = u.Path
+		cfg.Metrics.FallbackURLPathFromURL = true
+		if cfg.Metrics.FallbackURLPath == "" {
+			cfg.Metrics.FallbackURLPath = "/"
+		}
+		cfg.Metrics.FallbackInsecure = u.Scheme != "https"
+		cfg.Metrics.FallbackInsecureSet = true
+
+		return cfg
+	})
+}
+
+// FallbackSignalConfig returns the signal configuration to use for the fallback
+// endpoint. The returned config is a copy of primary with endpoint fields
+// replaced by fallback values.
+func FallbackSignalConfig(primary SignalConfig, defaultPath string) (SignalConfig, bool) {
+	if primary.FallbackEndpoint == "" {
+		return SignalConfig{}, false
+	}
+
+	fallback := primary
+	fallback.Endpoint = primary.FallbackEndpoint
+
+	if primary.FallbackURLPathFromURL {
+		fallback.URLPath = cleanPath(primary.FallbackURLPath, defaultPath)
+	}
+	if primary.FallbackInsecureSet {
+		fallback.Insecure = primary.FallbackInsecure
+	}
+
+	fallback.FallbackEndpoint = ""
+	fallback.FallbackURLPath = ""
+	fallback.FallbackInsecure = false
+	fallback.FallbackInsecureSet = false
+	fallback.FallbackURLPathFromURL = false
+
+	return fallback, true
 }

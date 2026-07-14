@@ -219,3 +219,15 @@ func WithMaxRequestSize(size int) Option {
 func WithRetry(settings RetryConfig) Option {
 	return wrappedOption{otlpconfig.WithRetry(retry.Config(settings))}
 }
+
+// WithFallbackEndpoint sets a fallback endpoint (host and port only) used when
+// the primary endpoint fails with a transport error after retries are exhausted.
+func WithFallbackEndpoint(endpoint string) Option {
+	return wrappedOption{otlpconfig.WithFallbackEndpoint(endpoint)}
+}
+
+// WithFallbackEndpointURL sets a fallback endpoint URL used when the primary
+// endpoint fails with a transport error after retries are exhausted.
+func WithFallbackEndpointURL(u string) Option {
+	return wrappedOption{otlpconfig.WithFallbackEndpointURL(u)}
+}

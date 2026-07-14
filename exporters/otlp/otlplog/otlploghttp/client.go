@@ -24,6 +24,7 @@ import (
 	"google.golang.org/protobuf/proto"
 
 	"go.opentelemetry.io/otel/exporters/otlp/otlplog/otlploghttp/internal"
+	"go.opentelemetry.io/otel/exporters/otlp/otlplog/otlploghttp/internal/failover"
 	"go.opentelemetry.io/otel/exporters/otlp/otlplog/otlploghttp/internal/observ"
 	"go.opentelemetry.io/otel/exporters/otlp/otlplog/otlploghttp/internal/retry"
 )
@@ -117,6 +118,13 @@ func newHTTPClient(ctx context.Context, cfg config) (*client, error) {
 		requestFunc:    cfg.retryCfg.Value.RequestFunc(evaluate),
 		client:         hc,
 	}
+	if fbEndpoint, fbPath, fbInsecure, ok := cfg.fallbackEndpointConfig(); ok {
+		fbReq, fbErr := newLogHTTPRequest(fbEndpoint, fbPath, fbInsecure, cfg.headers.Value)
+		if fbErr != nil {
+			return nil, fbErr
+		}
+		c.fallbackReq = fbReq
+	}
 
 	id := nextExporterID()
 	c.inst, err = observ.NewInstrumentation(id, cfg.endpoint.Value)
@@ -125,14 +133,36 @@ func newHTTPClient(ctx context.Context, cfg config) (*client, error) {
 }
 
 type httpClient struct {
-	// req is cloned for every upload the client makes.
 	req            *http.Request
+	fallbackReq    *http.Request
 	compression    Compression
 	maxRequestSize int
 	requestFunc    retry.RequestFunc
 	client         *http.Client
 
 	inst *observ.Instrumentation
+}
+
+func newLogHTTPRequest(endpoint, path string, insecure bool, headers map[string]string) (*http.Request, error) {
+	u := &url.URL{
+		Scheme: "https",
+		Host:   endpoint,
+		Path:   path,
+	}
+	if insecure {
+		u.Scheme = "http"
+	}
+	req, err := http.NewRequestWithContext(context.Background(), http.MethodPost, u.String(), http.NoBody)
+	if err != nil {
+		return nil, err
+	}
+	userAgent := "OTel Go OTLP over HTTP/protobuf logs exporter/" + Version()
+	req.Header.Set("User-Agent", userAgent)
+	for k, v := range headers {
+		req.Header.Set(k, v)
+	}
+	req.Header.Set("Content-Type", "application/x-protobuf")
+	return req, nil
 }
 
 // Keep it in sync with golang's DefaultTransport from net/http! We
@@ -163,7 +193,37 @@ func (c *httpClient) uploadLogs(ctx context.Context, data []*logpb.ResourceLogs)
 	}
 
 	var statusCode int
-	if c.inst != nil {
+
+	if maxSize := c.maxRequestSize; maxSize > 0 && len(body) > maxSize {
+		return fmt.Errorf("request body too large: exceeded %d bytes", maxSize)
+	}
+
+	err = c.uploadWithRequest(ctx, c.req, body, data, &uploadErr, &statusCode)
+	if err == nil {
+		return nil
+	}
+	if c.fallbackReq == nil || !failover.IsHTTPTransportError(err) {
+		return err
+	}
+	uploadErr = nil
+	statusCode = 0
+	return c.uploadWithRequest(ctx, c.fallbackReq, body, data, &uploadErr, &statusCode)
+}
+
+func (c *httpClient) uploadWithRequest(
+	ctx context.Context,
+	reqTemplate *http.Request,
+	body []byte,
+	data []*logpb.ResourceLogs,
+	uploadErr *error,
+	statusCode *int,
+) error {
+	request, err := c.newRequest(ctx, reqTemplate, body)
+	if err != nil {
+		return err
+	}
+
+	if c.inst != nil && reqTemplate == c.req {
 		var count int64
 		for _, resLogs := range data {
 			for _, scopeLogs := range resLogs.ScopeLogs {
@@ -171,25 +231,17 @@ func (c *httpClient) uploadLogs(ctx context.Context, data []*logpb.ResourceLogs)
 			}
 		}
 		op := c.inst.ExportLogs(ctx, count)
-		defer func() { op.End(uploadErr, statusCode) }()
+		defer func() { op.End(*uploadErr, *statusCode) }()
 	}
 
-	if maxSize := c.maxRequestSize; maxSize > 0 && len(body) > maxSize {
-		return fmt.Errorf("request body too large: exceeded %d bytes", maxSize)
-	}
-	request, err := c.newRequest(ctx, body)
-	if err != nil {
-		return err
-	}
-
-	return errors.Join(uploadErr, c.requestFunc(ctx, func(iCtx context.Context) error {
+	retErr := c.requestFunc(ctx, func(iCtx context.Context) error {
 		select {
 		case <-iCtx.Done():
 			return iCtx.Err()
 		default:
 		}
 
-		statusCode = 0
+		*statusCode = 0
 		request.reset(iCtx)
 		// nolint:gosec // URL is constructed from validated OTLP endpoint configuration
 		resp, err := c.client.Do(request.Request)
@@ -203,12 +255,12 @@ func (c *httpClient) uploadLogs(ctx context.Context, data []*logpb.ResourceLogs)
 		if resp != nil && resp.Body != nil {
 			defer func() {
 				if err := resp.Body.Close(); err != nil {
-					uploadErr = errors.Join(uploadErr, err)
+					*uploadErr = errors.Join(*uploadErr, err)
 				}
 			}()
 		}
 
-		statusCode = resp.StatusCode
+		*statusCode = resp.StatusCode
 		if sc := resp.StatusCode; sc >= 200 && sc <= 299 {
 			// Success, do not retry.
 
@@ -236,7 +288,7 @@ func (c *httpClient) uploadLogs(ctx context.Context, data []*logpb.ResourceLogs)
 					n := respProto.PartialSuccess.GetRejectedLogRecords()
 					if n != 0 || msg != "" {
 						err := internal.LogPartialSuccessError(n, msg)
-						uploadErr = errors.Join(uploadErr, err)
+						*uploadErr = errors.Join(*uploadErr, err)
 					}
 				}
 			}
@@ -273,7 +325,10 @@ func (c *httpClient) uploadLogs(ctx context.Context, data []*logpb.ResourceLogs)
 			// Non-retryable failure.
 			return fmt.Errorf("failed to send logs to %s: %s (%w)", request.URL, resp.Status, bodyErr)
 		}
-	}))
+	})
+	finalErr := errors.Join(*uploadErr, retErr)
+	*uploadErr = finalErr
+	return finalErr
 }
 
 var gzPool = sync.Pool{
@@ -283,8 +338,8 @@ var gzPool = sync.Pool{
 	},
 }
 
-func (c *httpClient) newRequest(ctx context.Context, body []byte) (request, error) {
-	r := c.req.Clone(ctx)
+func (c *httpClient) newRequest(ctx context.Context, reqTemplate *http.Request, body []byte) (request, error) {
+	r := reqTemplate.Clone(ctx)
 	req := request{Request: r}
 
 	switch c.compression {

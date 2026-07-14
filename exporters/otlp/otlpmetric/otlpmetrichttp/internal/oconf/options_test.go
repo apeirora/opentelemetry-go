@@ -286,6 +286,29 @@ func TestConfigs(t *testing.T) {
 			},
 		},
 
+		// Fallback endpoint tests
+		{
+			name: "Test With Fallback Endpoint",
+			opts: []GenericOption{
+				WithFallbackEndpoint("fallback:4318"),
+			},
+			asserts: func(t *testing.T, c *Config, grpcOption bool) { //nolint:revive // interface compliance
+				assert.Equal(t, "fallback:4318", c.Metrics.FallbackEndpoint)
+			},
+		},
+		{
+			name: "Test Environment Fallback Endpoint",
+			env: map[string]string{
+				"OTEL_EXPORTER_OTLP_FALLBACK_ENDPOINT": "http://fallback:4318",
+			},
+			asserts: func(t *testing.T, c *Config, grpcOption bool) { //nolint:revive // interface compliance
+				assert.Equal(t, "fallback:4318", c.Metrics.FallbackEndpoint)
+				if !grpcOption {
+					assert.Equal(t, "/v1/metrics", c.Metrics.FallbackURLPath)
+				}
+			},
+		},
+
 		// Certificate tests
 		{
 			name: "Test Default Certificate",

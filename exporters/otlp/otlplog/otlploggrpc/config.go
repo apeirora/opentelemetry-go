@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"net/url"
 	"os"
+	"path"
 	"strconv"
 	"strings"
 	"time"
@@ -74,6 +75,11 @@ var (
 			"OTEL_EXPORTER_OTLP_CLIENT_KEY",
 		},
 	}
+
+	envFallbackEndpoint = []string{
+		"OTEL_EXPORTER_OTLP_LOGS_FALLBACK_ENDPOINT",
+		"OTEL_EXPORTER_OTLP_FALLBACK_ENDPOINT",
+	}
 )
 
 type fnOpt func(config) config
@@ -101,6 +107,8 @@ type config struct {
 	reconnectionPeriod setting[time.Duration]
 	dialOptions        setting[[]grpc.DialOption]
 	gRPCConn           setting[*grpc.ClientConn]
+
+	fallbackEndpoint setting[string]
 }
 
 func newConfig(options []Option) config {
@@ -136,6 +144,10 @@ func newConfig(options []Option) config {
 	)
 	c.retryCfg = c.retryCfg.Resolve(
 		fallback[retry.Config](defaultRetryCfg),
+	)
+
+	c.fallbackEndpoint = c.fallbackEndpoint.Resolve(
+		getEnv[string](envFallbackEndpoint, convEndpointGRPC),
 	)
 
 	return c
@@ -337,6 +349,29 @@ func WithGRPCConn(conn *grpc.ClientConn) Option {
 	})
 }
 
+// WithFallbackEndpoint sets a fallback endpoint (host and port only) used when
+// the primary endpoint fails with a transport error after retries are exhausted.
+func WithFallbackEndpoint(endpoint string) Option {
+	return fnOpt(func(c config) config {
+		c.fallbackEndpoint = newSetting(endpoint)
+		return c
+	})
+}
+
+// WithFallbackEndpointURL sets a fallback endpoint URL used when the primary
+// endpoint fails with a transport error after retries are exhausted.
+func WithFallbackEndpointURL(rawURL string) Option {
+	u, err := url.Parse(rawURL)
+	if err != nil {
+		global.Error(err, "otlplog: parse fallback endpoint url", "url", rawURL)
+		return fnOpt(func(c config) config { return c })
+	}
+	return fnOpt(func(c config) config {
+		c.fallbackEndpoint = newSetting(path.Join(u.Host, u.Path))
+		return c
+	})
+}
+
 // WithTimeout sets the max amount of time an Exporter will attempt an export.
 //
 // This takes precedence over any retry settings defined by WithRetry. Once
@@ -412,6 +447,14 @@ func convEndpoint(s string) (string, error) {
 		return "", err
 	}
 	return u.Host, nil
+}
+
+func convEndpointGRPC(s string) (string, error) {
+	u, err := url.Parse(s)
+	if err != nil {
+		return "", err
+	}
+	return path.Join(u.Host, u.Path), nil
 }
 
 // convInsecure converts s from string to bool without case sensitivity.

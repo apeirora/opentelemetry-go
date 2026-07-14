@@ -22,6 +22,7 @@ import (
 	"go.opentelemetry.io/otel/exporters/otlp/otlptrace"
 	"go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracegrpc/internal"
 	"go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracegrpc/internal/counter"
+	"go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracegrpc/internal/failover"
 	"go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracegrpc/internal/observ"
 	"go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracegrpc/internal/otlpconfig"
 	"go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracegrpc/internal/retry"
@@ -29,6 +30,7 @@ import (
 
 type client struct {
 	endpoint       string
+	fallbackEndpoint string
 	dialOpts       []grpc.DialOption
 	metadata       metadata.MD
 	exportTimeout  time.Duration
@@ -49,6 +51,10 @@ type client struct {
 	conn    *grpc.ClientConn
 	tscMu   sync.RWMutex
 	tsc     coltracepb.TraceServiceClient
+
+	ourFallbackConn bool
+	fallbackConn    *grpc.ClientConn
+	fallbackTsc     coltracepb.TraceServiceClient
 
 	instID int64
 	inst   *observ.Instrumentation
@@ -77,6 +83,10 @@ func newClient(opts ...Option) *client {
 		stopFunc:       cancel,
 		conn:           cfg.GRPCConn,
 		instID:         counter.NextExporterID(),
+	}
+
+	if fb, ok := otlpconfig.FallbackSignalConfig(cfg.Traces, otlpconfig.DefaultTracesPath); ok {
+		c.fallbackEndpoint = fb.Endpoint
 	}
 
 	if len(cfg.Traces.Headers) > 0 {
@@ -185,6 +195,12 @@ func (c *client) Stop(ctx context.Context) error {
 			err = closeErr
 		}
 	}
+	if c.ourFallbackConn && c.fallbackConn != nil {
+		closeErr := c.fallbackConn.Close()
+		if err == nil && closeErr != nil {
+			err = closeErr
+		}
+	}
 	return err
 }
 
@@ -229,23 +245,55 @@ func (c *client) UploadTraces(ctx context.Context, protoSpans []*tracepb.Resourc
 		return fmt.Errorf("request message too large: exceeded %d bytes", maxSize)
 	}
 
+	err := c.export(ctx, c.tsc, pbRequest, &uploadErr, &code)
+	if err == nil {
+		return uploadErr
+	}
+	if c.fallbackEndpoint == "" || !failover.IsGRPCTransportError(err) {
+		return err
+	}
+	if fbErr := c.ensureFallbackConn(); fbErr != nil {
+		return errors.Join(fbErr, uploadErr)
+	}
+	return c.export(ctx, c.fallbackTsc, pbRequest, &uploadErr, &code)
+}
+
+func (c *client) ensureFallbackConn() error {
+	if c.fallbackTsc != nil {
+		return nil
+	}
+	conn, err := grpc.NewClient(c.fallbackEndpoint, c.dialOpts...)
+	if err != nil {
+		return err
+	}
+	c.ourFallbackConn = true
+	c.fallbackConn = conn
+	c.fallbackTsc = coltracepb.NewTraceServiceClient(conn)
+	return nil
+}
+
+func (c *client) export(
+	ctx context.Context,
+	tsc coltracepb.TraceServiceClient,
+	pbRequest *coltracepb.ExportTraceServiceRequest,
+	uploadErr *error,
+	code *codes.Code,
+) error {
 	return c.requestFunc(ctx, func(iCtx context.Context) error {
-		resp, err := c.tsc.Export(iCtx, pbRequest)
+		resp, err := tsc.Export(iCtx, pbRequest)
 		if resp != nil && resp.PartialSuccess != nil {
 			msg := resp.PartialSuccess.GetErrorMessage()
 			n := resp.PartialSuccess.GetRejectedSpans()
 			if n != 0 || msg != "" {
 				e := internal.TracePartialSuccessError(n, msg)
-				uploadErr = errors.Join(uploadErr, e)
+				*uploadErr = errors.Join(*uploadErr, e)
 			}
 		}
-		// nil is converted to OK.
-		code = status.Code(err)
-		if code == codes.OK {
-			// Success.
-			return uploadErr
+		*code = status.Code(err)
+		if *code == codes.OK {
+			return *uploadErr
 		}
-		return errors.Join(uploadErr, err)
+		return errors.Join(*uploadErr, err)
 	})
 }
 

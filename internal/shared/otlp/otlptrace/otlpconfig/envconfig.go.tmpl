@@ -102,6 +102,12 @@ func getOptionsFromEnv() []GenericOption {
 		WithEnvCompression("TRACES_COMPRESSION", func(c Compression) { opts = append(opts, WithCompression(c)) }),
 		envconfig.WithDuration("TIMEOUT", func(d time.Duration) { opts = append(opts, WithTimeout(d)) }),
 		envconfig.WithDuration("TRACES_TIMEOUT", func(d time.Duration) { opts = append(opts, WithTimeout(d)) }),
+		envconfig.WithURL("FALLBACK_ENDPOINT", func(u *url.URL) {
+			opts = append(opts, withFallbackEndpoint(u, DefaultTracesPath, false))
+		}),
+		envconfig.WithURL("TRACES_FALLBACK_ENDPOINT", func(u *url.URL) {
+			opts = append(opts, withFallbackEndpoint(u, DefaultTracesPath, true))
+		}),
 	)
 
 	return opts
@@ -123,6 +129,36 @@ func withEndpointForGRPC(u *url.URL) func(cfg Config) Config {
 		cfg.Traces.Endpoint = path.Join(u.Host, u.Path)
 		return cfg
 	}
+}
+
+func withFallbackEndpoint(u *url.URL, defaultPath string, perSignal bool) GenericOption {
+	return newSplitOption(
+		func(cfg Config) Config {
+			cfg.Traces.FallbackEndpoint = u.Host
+			if perSignal {
+				path := u.Path
+				if path == "" {
+					path = "/"
+				}
+				cfg.Traces.FallbackURLPath = path
+			} else {
+				cfg.Traces.FallbackURLPath = path.Join(u.Path, defaultPath)
+			}
+			cfg.Traces.FallbackURLPathFromURL = true
+			switch strings.ToLower(u.Scheme) {
+			case "http", "unix":
+				cfg.Traces.FallbackInsecure = true
+			default:
+				cfg.Traces.FallbackInsecure = false
+			}
+			cfg.Traces.FallbackInsecureSet = true
+			return cfg
+		},
+		func(cfg Config) Config {
+			cfg.Traces.FallbackEndpoint = path.Join(u.Host, u.Path)
+			return cfg
+		},
+	)
 }
 
 // WithEnvCompression retrieves the specified config and passes it to ConfigFn as a Compression.

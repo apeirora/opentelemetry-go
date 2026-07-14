@@ -275,3 +275,15 @@ func WithTemporalitySelector(selector metric.TemporalitySelector) Option {
 func WithAggregationSelector(selector metric.AggregationSelector) Option {
 	return wrappedOption{oconf.WithAggregationSelector(selector)}
 }
+
+// WithFallbackEndpoint sets a fallback endpoint (host and port only) used when
+// the primary endpoint fails with a transport error after retries are exhausted.
+func WithFallbackEndpoint(endpoint string) Option {
+	return wrappedOption{oconf.WithFallbackEndpoint(endpoint)}
+}
+
+// WithFallbackEndpointURL sets a fallback endpoint URL used when the primary
+// endpoint fails with a transport error after retries are exhausted.
+func WithFallbackEndpointURL(u string) Option {
+	return wrappedOption{oconf.WithFallbackEndpointURL(u)}
+}
