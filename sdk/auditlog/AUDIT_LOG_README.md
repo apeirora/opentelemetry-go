@@ -186,14 +186,16 @@ For SQLite the `sqlite` driver is registered when importing `go.opentelemetry.io
 
 `DefaultAuditLogProcessorConfig(exporter, store)` sets:
 
-- `ScheduleDelay`: `1s`
-- `MaxExportBatchSize`: `512`
-- `ExporterTimeout`: `30s`
-- `RetryPolicy.InitialBackoff`: `1s`
-- `RetryPolicy.MaxBackoff`: `1m`
-- `RetryPolicy.BackoffMultiplier`: `2.0`
-- `WaitOnExport`: `true`
-- `ExceptionHandler`: `DefaultAuditExceptionHandler`
+| Setting | Default | Description |
+|---------|---------|-------------|
+| `ScheduleDelay` | `1s` | Delay between periodic exports |
+| `MaxExportBatchSize` | `512` | Maximum records per export batch |
+| `ExporterTimeout` | `30s` | Timeout for export operations |
+| `RetryPolicy.InitialBackoff` | `1s` | Initial backoff duration |
+| `RetryPolicy.MaxBackoff` | `1m` | Maximum backoff duration |
+| `RetryPolicy.BackoffMultiplier` | `2.0` | Backoff multiplier |
+| `WaitOnExport` | `true` | Whether to wait for exports to complete before returning from emit |
+| `ExceptionHandler` | `DefaultAuditExceptionHandler` | Handles processor-side failures via `otel.Handle` |
 
 ## Audit Record Requirements
 
