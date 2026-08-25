@@ -53,6 +53,14 @@
 //
 //	go run ./testapp -count 10 -reject-every 3
 //
+// Expose SDK audit metrics for Prometheus scrape (isolated registry, default :9464):
+//
+//	go run ./testapp -metrics-addr :9464 -count 10 -reject-every 3
+//
+// Scrape (PowerShell):
+//
+//	curl.exe -s http://localhost:9464/metrics | Select-String 'otel_scope_name="go.opentelemetry.io/otel/sdk/auditlog"'
+//
 // Enable startup replay debug logs:
 //
 //	go run ./testapp -debug-replay -otlp-endpoint http://localhost:4318/auditlogs -filestore C:\temp\auditlog-demo
@@ -97,6 +105,8 @@ func main() {
 	tlsCertFile := flag.String("tls-cert-file", "", "path to PEM client certificate for OTLP mTLS; default testapp/dev_otlp_client.crt when using https")
 	tlsKeyFile := flag.String("tls-key-file", "", "path to PEM client private key for OTLP mTLS; default testapp/dev_otlp_client.key when using https")
 	rejectEvery := flag.Int("reject-every", 0, "if > 0, every Nth emit (1-based) uses invalid integrity proofs so the provider rejects it (status 400)")
+	metricsAddr := flag.String("metrics-addr", ":9464", "listen address for Prometheus /metrics with SDK audit metrics only; empty disables")
+	metricsHold := flag.Duration("metrics-hold", 30*time.Second, "keep process alive after emits so /metrics can be scraped; 0 exits immediately")
 	flag.Parse()
 
 	if *count < 1 {
@@ -113,6 +123,16 @@ func main() {
 	if *debugReplay {
 		_ = os.Setenv("OTEL_AUDITLOG_DEBUG_REPLAY", "1")
 		fmt.Fprintln(os.Stderr, "testapp: enabled replay debug logs (OTEL_AUDITLOG_DEBUG_REPLAY=1)")
+	}
+
+	var metrics *metricsServer
+	if strings.TrimSpace(*metricsAddr) != "" {
+		var err error
+		metrics, err = startMetricsServer(strings.TrimSpace(*metricsAddr))
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "testapp: %v\n", err)
+			os.Exit(1)
+		}
 	}
 
 	envHMACFile := strings.TrimSpace(os.Getenv(auditlog.EnvAuditlogHMACKeyFile))
@@ -242,6 +262,15 @@ func main() {
 	if err := provider.Shutdown(ctx); err != nil {
 		fmt.Fprintf(os.Stderr, "provider shutdown: %v\n", err)
 		os.Exit(1)
+	}
+	if metrics != nil {
+		if hint := metrics.scrapeHint(); hint != "" {
+			fmt.Fprintf(os.Stderr, "testapp: scrape SDK metrics:\n  %s\n", hint)
+		}
+		if *metricsHold > 0 {
+			fmt.Fprintf(os.Stderr, "testapp: holding %s for metrics scrape (Ctrl+C to exit sooner)\n", *metricsHold)
+			time.Sleep(*metricsHold)
+		}
 	}
 	fmt.Println("done.")
 }

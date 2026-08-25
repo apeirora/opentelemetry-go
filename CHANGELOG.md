@@ -17,6 +17,7 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 - In `go.opentelemetry.io/otel/sdk/auditlog`, retain stored records when background export receives an HTTP rejection; remove store entries only after successful export.
 - In `go.opentelemetry.io/otel/sdk/auditlog`, re-queue stored batches with backoff when background export receives HTTP 503/429.
 - In `go.opentelemetry.io/otel/sdk/auditlog`, add an export circuit breaker after `MaxAttempts` is exceeded: pause background export, resync `AuditLogStore` into the queue after `CircuitOpenDuration`, then probe again without requiring process restart.
+- In `go.opentelemetry.io/otel/sdk/auditlog`, add high-priority self-observability metrics: `audit.records.rejected` (`error.type`), `audit.records.stored`, and `audit.store.errors` (`audit.store.operation`, `error.type`); record `error.type` on failed `audit.export.duration` samples.
 
 ### Changed
 

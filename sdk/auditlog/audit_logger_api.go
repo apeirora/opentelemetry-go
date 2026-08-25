@@ -107,18 +107,17 @@ func (l *auditLogger) EmitWithResult(ctx context.Context, record AuditRecord) Au
 	normalizeAuditRecordFields(&record)
 	if err := ensureAuditRecordID(&record); err != nil {
 		result := AuditEmitResult{RecordID: record.RecordID}
-		result.StatusCode, result.Status, result.Reason = mapAuditError(err)
-		return result
+		return finishEmitError(ctx, result, err)
 	}
 	result := AuditEmitResult{RecordID: record.RecordID}
 	if l.provider.stopped.Load() {
 		err := newAuditStatusError(AuditErrorUnavailable, "provider_shutdown", true, nil)
-		result.StatusCode, result.Status, result.Reason = mapAuditError(err)
+		result = finishEmitError(ctx, result, err)
 		result.RetryAfter = time.Second
 		return result
 	}
 	if err := l.provider.evaluatePolicies(ctx, record); err != nil {
-		result.StatusCode, result.Status, result.Reason = mapAuditError(err)
+		result = finishEmitError(ctx, result, err)
 		if statusErr, ok := err.(*AuditStatusError); ok && statusErr.Code == AuditErrorTooManyRequests {
 			result.RetryAfter = time.Second
 		}
@@ -126,18 +125,13 @@ func (l *auditLogger) EmitWithResult(ctx context.Context, record AuditRecord) Au
 	}
 	record, err := l.provider.enrichIntegrity(ctx, record)
 	if err != nil {
-		result.StatusCode, result.Status, result.Reason = mapAuditError(
-			newAuditStatusError(AuditErrorInvalidRequest, "audit integrity enrichment failed", false, err),
-		)
-		return result
+		return finishEmitError(ctx, result, newAuditStatusError(AuditErrorInvalidRequest, "audit integrity enrichment failed", false, err))
 	}
 	if err := validateRequiredAuditRecord(record, l.provider); err != nil {
-		result.StatusCode, result.Status, result.Reason = mapAuditError(err)
-		return result
+		return finishEmitError(ctx, result, err)
 	}
 	if err := validateAuditRecordSpec(record); err != nil {
-		result.StatusCode, result.Status, result.Reason = mapAuditError(err)
-		return result
+		return finishEmitError(ctx, result, err)
 	}
 	if err := verifyAuditIntegrity(
 		record,
@@ -146,8 +140,7 @@ func (l *auditLogger) EmitWithResult(ctx context.Context, record AuditRecord) Au
 		l.provider.hashAlgorithm,
 		l.provider.signContent,
 	); err != nil {
-		result.StatusCode, result.Status, result.Reason = mapAuditError(err)
-		return result
+		return finishEmitError(ctx, result, err)
 	}
 	otelRecord := record.Record.Clone()
 	prepareAuditLogRecord(&otelRecord)
@@ -159,8 +152,7 @@ func (l *auditLogger) EmitWithResult(ctx context.Context, record AuditRecord) Au
 	otelRecord.SetEventName(record.EventName)
 	res, err := l.provider.auditResourceForRecord(record)
 	if err != nil {
-		result.StatusCode, result.Status, result.Reason = mapAuditError(err)
-		return result
+		return finishEmitError(ctx, result, err)
 	}
 	otelRecord.SetResource(res)
 	targetID, targetType := auditTargetFields(record)
@@ -201,7 +193,7 @@ func (l *auditLogger) EmitWithResult(ctx context.Context, record AuditRecord) Au
 	queuedAt := time.Now().UTC()
 	for _, p := range l.provider.processors {
 		if err := p.OnEmit(ctx, &otelRecord); err != nil {
-			result.StatusCode, result.Status, result.Reason = mapAuditError(err)
+			result = finishEmitError(ctx, result, err)
 			if statusErr, ok := err.(*AuditStatusError); ok && statusErr.Retryable {
 				result.RetryAfter = time.Second
 			}
@@ -213,7 +205,7 @@ func (l *auditLogger) EmitWithResult(ctx context.Context, record AuditRecord) Au
 		for _, p := range l.provider.processors {
 			if err := p.ForceFlush(ctx); err != nil {
 				mappedErr := newAuditStatusError(AuditErrorUnavailable, "processor_flush_failed", true, err)
-				result.StatusCode, result.Status, result.Reason = mapAuditError(mappedErr)
+				result = finishEmitError(ctx, result, mappedErr)
 				result.RetryAfter = time.Second
 				return result
 			}
@@ -222,7 +214,7 @@ func (l *auditLogger) EmitWithResult(ctx context.Context, record AuditRecord) Au
 			if ap, ok := proc.(*AuditLogProcessor); ok {
 				if dropErr := ap.takeDroppedError(record.RecordID); dropErr != nil {
 					mappedErr := newAuditStatusError(AuditErrorUnavailable, "audit_record_dropped", true, dropErr)
-					result.StatusCode, result.Status, result.Reason = mapAuditError(mappedErr)
+					result = finishEmitError(ctx, result, mappedErr)
 					result.RetryAfter = time.Second
 					return result
 				}
@@ -251,6 +243,17 @@ func (l *auditLogger) EmitWithResult(ctx context.Context, record AuditRecord) Au
 		result.StatusCode = 202
 		result.Status = "queued"
 		result.QueuedAt = queuedAt
+	}
+	return result
+}
+
+func finishEmitError(ctx context.Context, result AuditEmitResult, err error) AuditEmitResult {
+	result.StatusCode, result.Status, result.Reason = mapAuditError(err)
+	if result.Status == "stored" {
+		return result
+	}
+	if result.StatusCode >= 400 {
+		auditMetricsInstance().recordRejected(ctx, 1, auditMetricErrorType(err))
 	}
 	return result
 }

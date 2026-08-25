@@ -420,7 +420,7 @@ func (p *AuditLogProcessor) replayStoredBatch(records []Record) error {
 	}
 	exportStart := time.Now()
 	exportResult, err := p.config.Exporter.Export(ctx, records)
-	auditMetricsInstance().recordExportDuration(ctx, time.Since(exportStart))
+	auditMetricsInstance().recordExportDuration(ctx, time.Since(exportStart), err)
 	if err != nil {
 		p.handleExportFailure(records, err)
 		return err
@@ -481,7 +481,7 @@ func (p *AuditLogProcessor) OnEmit(ctx context.Context, record *Record) error {
 	}
 	exportStart := time.Now()
 	exportResult, err := p.config.Exporter.Export(exportCtx, []Record{*record})
-	auditMetricsInstance().recordExportDuration(exportCtx, time.Since(exportStart))
+	auditMetricsInstance().recordExportDuration(exportCtx, time.Since(exportStart), err)
 	if err == nil {
 		auditMetricsInstance().recordExported(exportCtx, 1)
 		p.storeFlushReceipts(exportResult.Receipts)
@@ -500,17 +500,19 @@ func (p *AuditLogProcessor) OnEmit(ctx context.Context, record *Record) error {
 	}
 
 	storeCtx := nonCancelContext(ctx)
-	if err := p.config.AuditLogStore.Save(storeCtx, record); err != nil {
+	if saveErr := p.config.AuditLogStore.Save(storeCtx, record); saveErr != nil {
+		auditMetricsInstance().recordStoreError(storeCtx, storeOpSave, saveErr)
 		exception := &AuditException{
 			Status:     AuditExceptionStoreSaveFailed,
 			Message:    "Failed to save record to audit store",
-			Cause:      err,
+			Cause:      saveErr,
 			Context:    ctx,
 			LogRecords: []Record{*record},
 		}
 		p.config.ExceptionHandler.Handle(exception)
 		return exception
 	}
+	auditMetricsInstance().recordStored(storeCtx, 1)
 
 	p.queueMutex.Lock()
 	p.queue = append(p.queue, record.Clone())
@@ -591,7 +593,7 @@ func (p *AuditLogProcessor) exportLogs(ignoreRetryDelay bool) error {
 	}
 
 	exportResult, err := p.config.Exporter.Export(ctx, recordsToExport)
-	auditMetricsInstance().recordExportDuration(ctx, time.Since(exportStart))
+	auditMetricsInstance().recordExportDuration(ctx, time.Since(exportStart), err)
 	if err != nil {
 		if p.handleExportFailure(recordsToExport, err) {
 			maxAttempts := p.config.RetryPolicy.MaxAttempts
@@ -625,6 +627,7 @@ func (p *AuditLogProcessor) removeExportedRecordsFromStore(ctx context.Context, 
 			return nil
 		}
 	}
+	auditMetricsInstance().recordStoreError(ctx, storeOpRemove, removeErr)
 	p.config.ExceptionHandler.Handle(&AuditException{
 		Status:     AuditExceptionStoreRemoveFailed,
 		Message:    "Exported audit records but failed to remove them from the store (telemetry may have been delivered; file may still show old entries)",
