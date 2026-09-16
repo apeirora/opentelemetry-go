@@ -123,6 +123,9 @@ func (l *auditLogger) EmitWithResult(ctx context.Context, record AuditRecord) Au
 		}
 		return result
 	}
+	if record.ObservedTimestamp().IsZero() {
+		record.SetObservedTimestamp(time.Now())
+	}
 	record, err := l.provider.enrichIntegrity(ctx, record)
 	if err != nil {
 		return finishEmitError(ctx, result, newAuditStatusError(AuditErrorInvalidRequest, "audit integrity enrichment failed", false, err))
@@ -144,10 +147,6 @@ func (l *auditLogger) EmitWithResult(ctx context.Context, record AuditRecord) Au
 	}
 	otelRecord := record.Record.Clone()
 	prepareAuditLogRecord(&otelRecord)
-	if otelRecord.ObservedTimestamp().IsZero() {
-		otelRecord.SetObservedTimestamp(time.Now())
-	}
-	record.SetObservedTimestamp(otelRecord.ObservedTimestamp())
 	warnAuditRecordTimestampSkew(record, defaultAuditTimestampSkew)
 	otelRecord.SetEventName(record.EventName)
 	res, err := l.provider.auditResourceForRecord(record)

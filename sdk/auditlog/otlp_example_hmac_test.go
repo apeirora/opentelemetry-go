@@ -19,8 +19,8 @@ const (
 	exampleTimestamp = "2026-05-19T12:36:04.2396044Z"
 	exampleBody      = `{"event":"user.login","n":0,"id":"rec-e4c39188-a682-4dc2-a17b-9e5ba0ab7a0a"}`
 
-	wantMetaSignHMACHex = "f031e1fc46edcae91e3dbced756a46a5c3c913078351bd95fb37119e3b7a407c"
-	wantBodySignHMACHex = "016924ece22de4e77299c22300d9a1b42533e0cc5ce707f3835bb0fdca3a80f4"
+	wantMetaSignHMACHex = "16276801aab53a674be54083fe500c1fad3cf55a8e06c34b85a550142878c23e"
+	wantBodySignHMACHex = "2ae64dee8ae6830324bf266079d91f13de1029f6de463ea91ad774f510ba6d51"
 )
 
 func loadTestappHMACKey(t *testing.T) []byte {

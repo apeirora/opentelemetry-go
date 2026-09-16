@@ -21,6 +21,7 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ### Changed
 
+- ⚠️ **Breaking Change:** In `go.opentelemetry.io/otel/sdk/auditlog`, align JCS signing payloads with collector `signingprocessor` ([#50892](https://github.com/open-telemetry/opentelemetry-collector-contrib/pull/50892)): type-tagged scalar encoding (`stringValue`/`intValue`/…), timestamps as Unix-nanosecond decimal strings, attributes as a typed object map (including merged audit fields), typed bodies of any kind, and omission of severity from the signed payload. Existing integrity values will not verify against the new canonical form.
 - In `go.opentelemetry.io/otel/sdk/auditlog/otlpexport`, apply one inline OTLP HTTP retry per `Export()` by default (`MaxElapsedTime` 750ms). Use `WithHTTPRetry(false)` to disable.
 
 - In `go.opentelemetry.io/otel/sdk/auditlog`, simplify `AuditLogProcessor` to a single delivery model: synchronous export when the collector is reachable, async store-and-retry only when the collector is unreachable. Remove `AuditDeliveryMode`, `AuditStorageWriteMode`, `SetDeliveryMode`, and `SetStorageWriteMode`.
