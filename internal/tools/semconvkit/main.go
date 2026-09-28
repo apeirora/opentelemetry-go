@@ -14,6 +14,7 @@ import (
 	"go/token"
 	"log/slog"
 	"os"
+	"path"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -61,7 +62,7 @@ func main() {
 			continue
 		}
 
-		src := filepath.Join("templates", entry.Name())
+		src := path.Join("templates", entry.Name())
 		err := render(src, out, sc)
 		if err != nil {
 			slog.Error("error rendering template", "err", err, "template", entry.Name())
@@ -71,18 +72,18 @@ func main() {
 
 	prevPkg, err := prevVer(*semconvPkg, *tag, *prev)
 	if err != nil {
-		slog.Error("previous version not found, skipping migration", "err", err)
-		os.Exit(1)
+		slog.Warn("previous version not found, skipping migration", "err", err)
+		return
 	}
 
 	slog.Debug("previous version found", "prev", prevPkg)
 	m, err := newMigration(out, filepath.Join(*semconvPkg, prevPkg))
 	if err != nil {
-		slog.Error("error getting migration, skipping", "err", err)
-		os.Exit(1)
+		slog.Warn("error getting migration, skipping", "err", err)
+		return
 	}
 
-	if err := render("templates/MIGRATION.md.tmpl", out, m); err != nil {
+	if err := render(path.Join("templates", "MIGRATION.md.tmpl"), out, m); err != nil {
 		slog.Error("error rendering migration template", "err", err)
 		os.Exit(1)
 	}
@@ -116,7 +117,8 @@ func render(src, dest string, data any) error {
 	}
 	for _, tmpl := range tmpls.Templates() {
 		slog.Debug("rendering template", "name", tmpl.Name())
-		target := filepath.Join(dest, strings.TrimSuffix(tmpl.Name(), ".tmpl"))
+		name := path.Base(tmpl.Name())
+		target := filepath.Join(dest, strings.TrimSuffix(name, ".tmpl"))
 		wr, err := os.Create(target)
 		if err != nil {
 			return err
@@ -135,6 +137,7 @@ func render(src, dest string, data any) error {
 // It will first check for hint within root and return that value if found. If
 // not found, it will find all directories in root with a version name and
 // return the version that is less than and closest to the curr version.
+// When cur is not a semver tag, the highest existing semver directory is used.
 func prevVer(root, cur, hint string) (string, error) {
 	slog.Debug("prevVer", "root", root, "current", cur, "hint", hint)
 	info, err := os.Stat(root)
@@ -154,9 +157,9 @@ func prevVer(root, cur, hint string) (string, error) {
 		}
 	}
 
-	v, err := semver.NewVersion(cur)
-	if err != nil {
-		return "", fmt.Errorf("invalid current version %q: %w", cur, err)
+	curVer, curErr := semver.NewVersion(cur)
+	if curErr != nil {
+		slog.Debug("current tag is not semver, using latest semver directory as previous", "tag", cur, "err", curErr)
 	}
 
 	entries, err := os.ReadDir(root)
@@ -167,18 +170,24 @@ func prevVer(root, cur, hint string) (string, error) {
 	var prev *semver.Version
 	for _, entry := range entries {
 		slog.Debug("root entry", "name", entry.Name())
-		if !entry.IsDir() {
+		if !entry.IsDir() || entry.Name() == cur {
 			continue
 		}
 
 		ver, err := semver.NewVersion(entry.Name())
 		if err != nil {
 			slog.Debug("not a version dir", "name", entry.Name())
-			// Ignore errors for non-semver directories.
 			continue
 		}
-		slog.Debug("found version dir", "prev", ver)
-		if ver.LessThan(v) && (prev == nil || ver.GreaterThan(prev)) {
+		slog.Debug("found version dir", "version", ver)
+		if curErr != nil {
+			if prev == nil || ver.GreaterThan(prev) {
+				slog.Debug("new previous version", "version", ver)
+				prev = ver
+			}
+			continue
+		}
+		if ver.LessThan(curVer) && (prev == nil || ver.GreaterThan(prev)) {
 			slog.Debug("new previous version", "version", ver)
 			prev = ver
 		}

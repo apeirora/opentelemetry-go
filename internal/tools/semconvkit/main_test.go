@@ -85,6 +85,44 @@ func TestNoInvalidObservableHistogramTypes(t *testing.T) {
 	}
 }
 
+func TestPrevVerNonSemverTag(t *testing.T) {
+	t.Parallel()
+
+	root := t.TempDir()
+	for _, name := range []string{"v1.40.0", "v1.41.0", "audit1.44.0"} {
+		if err := os.Mkdir(filepath.Join(root, name), 0o755); err != nil {
+			t.Fatalf("Mkdir(%q) error = %v", name, err)
+		}
+	}
+
+	got, err := prevVer(root, "audit1.44.0", "")
+	if err != nil {
+		t.Fatalf("prevVer() error = %v", err)
+	}
+	if got != "v1.41.0" {
+		t.Fatalf("prevVer() = %q, want %q", got, "v1.41.0")
+	}
+}
+
+func TestPrevVerHint(t *testing.T) {
+	t.Parallel()
+
+	root := t.TempDir()
+	for _, name := range []string{"v1.40.0", "custom-prev", "audit1.44.0"} {
+		if err := os.Mkdir(filepath.Join(root, name), 0o755); err != nil {
+			t.Fatalf("Mkdir(%q) error = %v", name, err)
+		}
+	}
+
+	got, err := prevVer(root, "audit1.44.0", "custom-prev")
+	if err != nil {
+		t.Fatalf("prevVer() error = %v", err)
+	}
+	if got != "custom-prev" {
+		t.Fatalf("prevVer() = %q, want %q", got, "custom-prev")
+	}
+}
+
 func writeGoFile(t *testing.T, dir, _, src string) {
 	t.Helper()
 
